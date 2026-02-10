@@ -120,7 +120,7 @@ Run `/session-report` at end of each session to write a dated entry to SESSION_L
 
 ## Using Agent Teams
 
-You can spawn Agent Teams teammates within your pane for two purposes:
+You can spawn Agent Teams within your pane for two purposes:
 
 ### For Plan Execution
 When working on a complex plan you've claimed, spawn teammates to parallelize:

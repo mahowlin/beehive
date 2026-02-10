@@ -24,7 +24,7 @@ Inspired by [Gas Town](https://steve-yegge.medium.com/welcome-to-gas-town-4f25ee
 | Claude Code | [Install guide](https://docs.anthropic.com/en/docs/claude-code) | [Install guide](https://docs.anthropic.com/en/docs/claude-code) |
 | Clipboard | `pbcopy` (built-in) | `sudo apt install xclip` or `xsel` |
 
-Works best with **Claude Opus 4.5**.
+Works best with **Claude Opus 4.6**.
 
 ## Quick Start
 
@@ -179,6 +179,7 @@ Claude Code works without configuration. For **AWS Bedrock**, create `.beehive.c
 CONF_AWS_PROFILE=my-profile
 CONF_AWS_REGION=us-west-2
 CONF_MODEL=us.anthropic.claude-sonnet-4-20250514-v1:0
+CONF_SESSION=my-session          # Optional: custom tmux session name
 CONF_CLAUDE_CMD=/path/to/claude  # Optional: custom claude path
 ```
 

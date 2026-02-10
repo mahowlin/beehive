@@ -7,7 +7,7 @@ Multi-agent orchestration tool for Claude Code. Launches 3 worker agents + 1 orc
 ## Code Structure
 
 ```
-beehive              # Main script (~500 lines bash)
+beehive              # Main script (~550 lines bash)
 ├── Helpers          # die(), warn(), info(), success()
 ├── Config           # load_config() - parses .beehive.conf safely
 ├── Detection        # detect_clipboard(), find_claude(), detect_mode()
@@ -95,7 +95,7 @@ Created with: `split-window -h`, `split-window -v` (x2), `select-layout tiled`
 ## Common Tasks
 
 - **Add CLI flag**: Update `main()` case statement + `usage()`
-- **Change prompts**: Edit `worker_prompt` / `orch_prompt` in `do_launch()`
+- **Change prompts**: Edit `bee_prompt` / `queen_prompt` in `do_launch()`
 - **Add config option**: Update `load_config()` case statement
 - **Change layout**: Modify tmux commands in `do_launch()`
 - **Upgrade existing projects**: `beehive --upgrade` (overwrites skills/commands/template)

@@ -10,8 +10,8 @@
 #   - Workspace mode: if path contains WORKSPACE.md or multiple git repos
 #   - Single repo mode: if path is a single repository
 #
-# Unlike Gas Town's autonomous GUPP model, this uses an interactive model
-# where the user directs agents and copies messages between them.
+# This uses an interactive model where the user directs agents and copies
+# messages between them (not autonomous).
 
 set -e
 

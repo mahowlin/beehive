@@ -45,7 +45,7 @@ You may draft plans and submit to Queen for review. Use `plans/TEMPLATE.md` as y
 ## Using Agent Teams
 
 For complex plans (3+ tasks, multi-file changes), you can spawn Agent Teams
-teammates within your pane to parallelize work.
+within your pane to parallelize work.
 
 **When to use:**
 - Plan has independent tasks that can run in parallel

@@ -21,6 +21,8 @@ If you're actually done:
 
 7. **Update status file** - Set Status: Complete in `.hive/bee-N.md`
 
-8. **Tell Queen:** "[plan] complete" with 1-sentence summary
+8. **Shut down teammates** - If you spawned Agent Teams teammates, shut them all down now. Verify their work is committed and correct before proceeding.
+
+9. **Tell Queen:** "[plan] complete" with 1-sentence summary
 
 **Do NOT edit TRACKER.md.**

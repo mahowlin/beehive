@@ -10,7 +10,7 @@ Multi-agent orchestration for Claude Code.
 └──────────┴──────────┘
 ```
 
-**3 Bees** execute plans. **1 Queen** coordinates. **You** (the Beekeeper) direct traffic.
+**3 Bees** execute plans. **1 Queen** works on plans and coordinates. **You** (the Beekeeper) direct traffic.
 
 **Who is this for?** Developers who want to run multiple Claude Code agents in parallel on a single codebase, with file-based coordination and interactive oversight.
 
@@ -50,6 +50,15 @@ EOF
 beehive
 ```
 
+**Upgrading an existing project:**
+
+```bash
+# After updating beehive (git pull), upgrade your project files
+beehive --upgrade
+```
+
+This overwrites skills, commands, and the plan template with the latest versions. Your plans, status files, TRACKER, and CLAUDE.md are preserved.
+
 **Install note:** Symlink goes to `/usr/local/bin` (works on macOS and Linux). Use `sudo` if needed. On Apple Silicon, `/opt/homebrew/bin` also works.
 
 ## What `beehive --init` Creates
@@ -60,17 +69,21 @@ myproject/
 ├── .skills/
 │   ├── bee.md                   # Bee behavior rules
 │   └── queen.md                 # Queen behavior rules
-├── .hive/                       # Bee status files (gitignored)
+├── .hive/                       # Agent status files (gitignored)
 │   ├── bee-1.md
 │   ├── bee-2.md
-│   └── bee-3.md
+│   ├── bee-3.md
+│   └── queen.md
 ├── .claude/commands/            # Slash commands
 │   ├── sting.md
 │   ├── buzz.md
 │   ├── report.md
-│   └── bedtime.md
+│   ├── bedtime.md
+│   ├── refresh.md
+│   ├── session-report.md
+│   └── deep-plan.md
 └── plans/
-    ├── INBOX.md                 # Plan requests from Bees
+    ├── INBOX.md                 # Plan requests from agents
     ├── TEMPLATE.md              # Template for new plans
     ├── completed/               # Archived plans
     └── _meta/
@@ -131,18 +144,18 @@ myproject/
 ```
 
 **Roles:**
-- **Queen** — Creates plans, tracks progress in `plans/_meta/TRACKER.md`, verifies completion
+- **Queen** — Works on plans, coordinates hive, tracks progress in `plans/_meta/TRACKER.md`, verifies completion
 - **Bees** — Execute plans, update status in `.hive/bee-N.md`, report discoveries
 - **Beekeeper (you)** — Direct agents, copy messages between panes, approve major steps
 
 **Workflow:**
 1. Tell Queen what to build
 2. Queen creates plans in `plans/`, updates `plans/_meta/TRACKER.md`
-3. Direct each Bee to claim a plan
-4. Bees execute, update status, run `/sting` when done
+3. Direct each Bee to claim a plan (Queen can also claim plans)
+4. Agents execute, update status, run `/sting` when done
 5. Queen verifies and archives completed plans
 
-**Creating plans:** Queen uses `plans/TEMPLATE.md`. See `templates/example-plan.md` for a complete example with Objective, Context, Tasks, and Done Criteria.
+**Creating plans:** Queen uses `plans/TEMPLATE.md` and `/deep-plan` for complex work. See `templates/example-plan.md` for a complete example with Objective, Why This Approach, Technical Context, Implementation Strategy, Tasks, and Done Criteria.
 
 ## Commands
 
@@ -151,9 +164,12 @@ Slash commands keep agents on track:
 | Command | Who | Purpose |
 |---------|-----|---------|
 | `/sting` | Bees | Self-check: on track? status updated? done? |
-| `/buzz` | Queen | Consolidate status from Bee files, process INBOX |
+| `/buzz` | Queen | Consolidate status from agent files, process INBOX |
 | `/report` | Any | Submit out-of-scope discoveries to INBOX |
-| `/bedtime` | Bees | Save state before break or session end |
+| `/bedtime` | Any | Save status and plan state before break or session end |
+| `/refresh` | Any | Mid-session plan hygiene (update tasks, context, session state) |
+| `/session-report` | Queen | Write end-of-session report to SESSION_LOG.md |
+| `/deep-plan` | Queen | Structured exploration before plan creation |
 
 ## Configuration
 
@@ -174,6 +190,26 @@ CONF_CLAUDE_CMD=/path/to/claude  # Optional: custom claude path
 | Scroll | Scroll in pane |
 | Ctrl+b, z | Zoom pane |
 | Ctrl+b, d | Detach (keeps running) |
+
+## CLI Usage
+
+```
+Usage: beehive [options] [path]
+
+Commands:
+    beehive [path]           Launch agents (default: current directory)
+    beehive --init [path]    Initialize repo/workspace structure
+    beehive --upgrade [path] Upgrade skills, commands, and template (preserves data)
+
+Options:
+    --session NAME    Session name (default: folder name)
+    --model MODEL     Anthropic model override
+    --profile PROF    AWS profile for Bedrock
+    --region REGION   AWS region for Bedrock
+    --yes             Skip confirmation
+    --version         Show version
+    --help            Show this help
+```
 
 ## Troubleshooting
 

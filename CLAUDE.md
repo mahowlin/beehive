@@ -7,11 +7,12 @@ Multi-agent orchestration tool for Claude Code. Launches 3 worker agents + 1 orc
 ## Code Structure
 
 ```
-beehive              # Main script (~400 lines bash)
+beehive              # Main script (~500 lines bash)
 ├── Helpers          # die(), warn(), info(), success()
 ├── Config           # load_config() - parses .beehive.conf safely
 ├── Detection        # detect_clipboard(), find_claude(), detect_mode()
 ├── Init             # do_init(), init_repo(), init_workspace()
+├── Upgrade          # do_upgrade() - update skills/commands/template
 ├── Launch           # do_launch() - tmux session setup
 └── Main             # Argument parsing, dispatch
 
@@ -50,6 +51,9 @@ git -C repo-a init && git -C repo-b init
 /path/to/beehive --init
 ls -la  # Should have WORKSPACE.md, plans/, plans/_meta/TRACKER.md
 
+# Test upgrade
+beehive --upgrade  # Should overwrite skills/commands/template, preserve data
+
 # Test launch (will open tmux)
 beehive --yes  # Skip confirmation
 
@@ -66,6 +70,7 @@ beehive --yes  # Should use "test-session" as tmux session name
 | `detect_mode()` | Determine workspace vs single repo |
 | `init_repo()` | Create CLAUDE.md, plans/, plans/_meta/TRACKER.md |
 | `init_workspace()` | Create WORKSPACE.md + per-repo CLAUDE.md |
+| `do_upgrade()` | Update skills, commands, template (preserves data) |
 | `do_launch()` | Set up tmux session with 4 panes |
 
 ## Tmux Layout
@@ -93,7 +98,8 @@ Created with: `split-window -h`, `split-window -v` (x2), `select-layout tiled`
 - **Change prompts**: Edit `worker_prompt` / `orch_prompt` in `do_launch()`
 - **Add config option**: Update `load_config()` case statement
 - **Change layout**: Modify tmux commands in `do_launch()`
+- **Upgrade existing projects**: `beehive --upgrade` (overwrites skills/commands/template)
 
 ## Version
 
-Current: v0.2.1 (see `VERSION` variable at top of script)
+Current: v0.3.1 (see `VERSION` variable at top of script)

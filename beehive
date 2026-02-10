@@ -4,6 +4,7 @@
 # Usage:
 #   beehive [path]           Run agents (auto-detects mode)
 #   beehive --init [path]    Initialize repo/workspace structure
+#   beehive --upgrade [path] Upgrade skills, commands, and template
 #
 # The tool auto-detects:
 #   - Workspace mode: if path contains WORKSPACE.md or multiple git repos
@@ -14,7 +15,7 @@
 
 set -e
 
-VERSION="0.2.1"
+VERSION="0.3.1"
 
 # Resolve symlinks to find actual script location (portable for Linux/macOS)
 SCRIPT_SOURCE="${BASH_SOURCE[0]}"
@@ -153,6 +154,8 @@ init_hive() {
             sed "s/Bee N/Bee $i/g" "$SCRIPT_DIR/templates/bee-status.md" > "$dir/.hive/bee-$i.md"
         fi
     done
+
+    [[ ! -f "$dir/.hive/queen.md" ]] && cp "$SCRIPT_DIR/templates/queen-status.md" "$dir/.hive/queen.md"
 }
 
 init_inbox() {
@@ -164,7 +167,7 @@ init_commands() {
     local dir="$1"
     mkdir -p "$dir/.claude/commands"
 
-    for cmd in report sting buzz bedtime; do
+    for cmd in report sting buzz bedtime refresh session-report deep-plan; do
         [[ ! -f "$dir/.claude/commands/$cmd.md" ]] && cp "$SCRIPT_DIR/commands/$cmd.md" "$dir/.claude/commands/$cmd.md"
     done
 }
@@ -205,7 +208,7 @@ init_repo() {
 <!-- Describe the project -->
 
 ## Agent Roles
-- **Queen (🐝)**: Creates plans, tracks progress, verifies completion. Read `.skills/queen.md`
+- **Queen (🐝)**: Works on plans, coordinates hive, tracks progress, verifies completion. Read `.skills/queen.md`
 - **Bees (🐝)**: Execute plans, update status, report discoveries. Read `.skills/bee.md`
 
 ## Coordination Files
@@ -213,12 +216,13 @@ init_repo() {
 - `plans/_meta/SESSION_LOG.md` - Session notes (Queen owns)
 - `plans/_meta/DEPENDENCIES.md` - Dependency graph (Queen owns)
 - `.hive/bee-N.md` - Bee status files (each Bee owns their own)
+- `.hive/queen.md` - Queen status file (Queen owns)
 - `plans/INBOX.md` - Plan requests from Bees
 
 ## Guidelines
 - Ask approval before environment-impacting operations
 - Bees report completion to Queen for verification
-- Use /report, /sting, /buzz commands
+- Use /report, /sting, /buzz, /refresh, /bedtime, /session-report, /deep-plan commands
 EOF
 
     [[ ! -f "$dir/plans/_meta/TRACKER.md" ]] && cp "$SCRIPT_DIR/templates/TRACKER.md" "$dir/plans/_meta/TRACKER.md"
@@ -248,7 +252,7 @@ Multi-repo workspace. Read WORKSPACE.md for repo overview, plans/_meta/TRACKER.m
 When assigned a plan, cd to the target repo and read its CLAUDE.md.
 
 ## Agent Roles
-- **Queen (🐝)**: Creates plans, tracks progress, verifies completion. Read `.skills/queen.md`
+- **Queen (🐝)**: Works on plans, coordinates hive, tracks progress, verifies completion. Read `.skills/queen.md`
 - **Bees (🐝)**: Execute plans, update status, report discoveries. Read `.skills/bee.md`
 
 ## Coordination Files
@@ -256,12 +260,13 @@ When assigned a plan, cd to the target repo and read its CLAUDE.md.
 - `plans/_meta/SESSION_LOG.md` - Session notes (Queen owns)
 - `plans/_meta/DEPENDENCIES.md` - Dependency graph (Queen owns)
 - `.hive/bee-N.md` - Bee status files (each Bee owns their own)
+- `.hive/queen.md` - Queen status file (Queen owns)
 - `plans/INBOX.md` - Plan requests from Bees
 
 ## Guidelines
 - Ask approval before environment-impacting operations
 - Bees report completion to Queen for verification
-- Use /report, /sting, /buzz commands
+- Use /report, /sting, /buzz, /refresh, /bedtime, /session-report, /deep-plan commands
 EOF
 
     [[ ! -f "$dir/WORKSPACE.md" ]] && {
@@ -383,7 +388,7 @@ do_launch() {
 
     local queen_prompt="Read CLAUDE.md, .skills/queen.md"
     [[ "$mode" == "workspace" ]] && queen_prompt+=", WORKSPACE.md"
-    queen_prompt+=", then $tracker. You are the Queen. Follow your skill instructions. Use /buzz to consolidate status. Wait for user direction."
+    queen_prompt+=", then $tracker and .hive/queen.md. You are the Queen. Follow your skill instructions. You work on plans AND coordinate. Use /buzz to consolidate, /session-report at end of session. Wait for user direction."
 
     # Launch
     for i in 0 1 2; do
@@ -415,6 +420,44 @@ do_launch() {
 }
 
 #######################################
+# Upgrade existing project
+#######################################
+do_upgrade() {
+    local path="$1"
+
+    # Must already be initialized
+    [[ ! -d "$path/plans" ]] && die "Not initialized. Run: beehive --init $path"
+
+    info "Upgrading beehive files in: $path"
+
+    # Upgrade skills (overwrite)
+    mkdir -p "$path/.skills"
+    cp "$SCRIPT_DIR/skills/bee.md" "$path/.skills/bee.md"
+    cp "$SCRIPT_DIR/skills/queen.md" "$path/.skills/queen.md"
+
+    # Upgrade commands (overwrite)
+    mkdir -p "$path/.claude/commands"
+    for cmd in report sting buzz bedtime refresh session-report deep-plan; do
+        cp "$SCRIPT_DIR/commands/$cmd.md" "$path/.claude/commands/$cmd.md"
+    done
+
+    # Upgrade plan template (overwrite)
+    cp "$SCRIPT_DIR/templates/plan.md" "$path/plans/TEMPLATE.md"
+
+    # Add new files (don't overwrite existing status/data)
+    [[ ! -f "$path/.hive/queen.md" ]] && cp "$SCRIPT_DIR/templates/queen-status.md" "$path/.hive/queen.md"
+
+    success "✓ Upgraded to v$VERSION"
+    echo "  Skills, commands, and template updated."
+    echo "  Status files, plans, and TRACKER preserved."
+    echo ""
+    echo "  Review changes:"
+    echo "    .skills/bee.md, .skills/queen.md"
+    echo "    .claude/commands/*"
+    echo "    plans/TEMPLATE.md"
+}
+
+#######################################
 # Usage
 #######################################
 usage() {
@@ -424,8 +467,9 @@ Usage: beehive [options] [path]
 Orchestrate multiple Claude Code agents in tmux.
 
 Commands:
-    beehive [path]        Launch agents (default: current directory)
-    beehive --init [path] Initialize repo/workspace structure
+    beehive [path]           Launch agents (default: current directory)
+    beehive --init [path]    Initialize repo/workspace structure
+    beehive --upgrade [path] Upgrade skills, commands, and template (preserves data)
 
 Options:
     --session NAME    Session name (default: folder name)
@@ -440,6 +484,7 @@ Examples:
     beehive                      # Run in current directory
     beehive ~/myproject          # Run in specific path
     beehive --init ~/projects    # Initialize (auto-detects workspace vs repo)
+    beehive --upgrade            # Upgrade skills/commands/template to latest
 
 EOF
     exit 0
@@ -456,6 +501,7 @@ main() {
     while [[ $# -gt 0 ]]; do
         case "$1" in
             --init)      cmd="init"; shift ;;
+            --upgrade)   cmd="upgrade"; shift ;;
             --session)   SESSION_NAME="$2"; shift 2 ;;
             --model)     ANTHROPIC_MODEL="$2"; shift 2 ;;
             --profile)   AWS_PROFILE="$2"; shift 2 ;;
@@ -473,6 +519,7 @@ main() {
 
     case "$cmd" in
         init) do_init "$path" ;;
+        upgrade) do_upgrade "$path" ;;
         *)
             echo ""
             echo -e "${GREEN}Beehive${NC} v$VERSION"

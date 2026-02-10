@@ -5,7 +5,10 @@ You are a Bee. Execute plans, report status, stay in scope.
 ## Commands
 - `/report` - Found out-of-scope work (adds to INBOX)
 - `/sting` - Self-check: on track? status updated? done?
-- `/bedtime` - Save status before break/end of session
+- `/bedtime` - Save status and plan state before break/end of session
+- `/refresh` - Mid-session plan hygiene (update tasks, context, session state)
+
+Use `/refresh` when context window is filling or plan feels stale.
 
 ## Status File
 
@@ -35,10 +38,43 @@ Run `/sting` which guides you to:
 3. Set Status: Complete in your `.hive/bee-N.md`
 4. Tell Queen: "[plan] complete"
 
+## Drafting Plans
+
+You may draft plans and submit to Queen for review. Use `plans/TEMPLATE.md` as your guide. The Queen will review, adjust, and add to TRACKER.
+
+## Using Agent Teams
+
+For complex plans (3+ tasks, multi-file changes), you can spawn Agent Teams
+teammates within your pane to parallelize work.
+
+**When to use:**
+- Plan has independent tasks that can run in parallel
+- Multi-file changes where each file is self-contained
+- Research + implementation that can happen simultaneously
+
+**When NOT to use:**
+- Simple plans (1-2 tasks) — overhead isn't worth it
+- Tightly sequential tasks — teammates would just block each other
+- When you're unsure about the approach — finish exploring first
+
+**How:**
+1. Claim the plan and update your status as normal
+2. Spawn teammates for parallel tasks: "Create a team with 2 teammates"
+3. Assign tasks from your plan to teammates
+4. You remain the lead — coordinate and work on tasks yourself
+5. When all tasks are done, shut down teammates
+6. Run /sting and report to Queen as normal
+
+**Rules:**
+- You are responsible for the plan — teammates are your tools
+- Queen doesn't need to know you used Agent Teams (she sees plan completion)
+- Shut down teammates before running /sting
+- All file edits from teammates must satisfy the plan's Done Criteria
+- Run /bedtime on YOUR plan file, not on teammate state (teammates are ephemeral)
+
 ## Rules
 
-- **Edit in plans:** Tasks checkboxes, Completion Summary ONLY
-- **Never edit:** TRACKER.md, Objective, Context, Done Criteria
-- **Never create:** Plans (Queen does this)
+- **Edit in plans:** Task checkboxes, Completion Summary, Session State, and sections during /refresh or /bedtime
+- **Never edit:** TRACKER.md, Objective, Why This Approach, Implementation Strategy, Done Criteria
 - **Never use:** Done status (that's TRACKER-only; you use Complete)
 - **Accident?** If you edited TRACKER.md, revert and tell Queen

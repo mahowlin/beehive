@@ -39,11 +39,16 @@ sudo ln -sf ~/beehive/beehive /usr/local/bin/beehive
 cd ~/myproject
 beehive --init
 
-# 4. (Optional) Configure for AWS Bedrock
+# 4. (Optional) Configure a backend
 cat > .beehive.conf << 'EOF'
-CONF_AWS_PROFILE=my-profile
-CONF_AWS_REGION=us-west-2
-CONF_MODEL=us.anthropic.claude-sonnet-4-20250514-v1:0
+# API proxy (e.g. local proxy to Anthropic API)
+CONF_ANTHROPIC_BASE_URL=http://localhost:8090
+CONF_ANTHROPIC_API_KEY=sk-ant-your-key
+
+# OR: AWS Bedrock
+# CONF_AWS_PROFILE=my-profile
+# CONF_AWS_REGION=us-west-2
+# CONF_MODEL=us.anthropic.claude-sonnet-4-20250514-v1:0
 EOF
 
 # 5. Launch
@@ -75,11 +80,9 @@ myproject/
 │   ├── bee-3.md
 │   └── queen.md
 ├── .claude/commands/            # Slash commands
-│   ├── sting.md
 │   ├── buzz.md
 │   ├── report.md
 │   ├── bedtime.md
-│   ├── refresh.md
 │   ├── session-report.md
 │   └── deep-plan.md
 └── plans/
@@ -152,7 +155,7 @@ myproject/
 1. Tell Queen what to build
 2. Queen creates plans in `plans/`, updates `plans/_meta/TRACKER.md`
 3. Direct each Bee to claim a plan (Queen can also claim plans)
-4. Agents execute, update status, run `/sting` when done
+4. Agents execute, update status, run `/buzz` when done
 5. Queen verifies and archives completed plans
 
 **Creating plans:** Queen uses `plans/TEMPLATE.md` and `/deep-plan` for complex work. See `templates/example-plan.md` for a complete example with Objective, Why This Approach, Technical Context, Implementation Strategy, Tasks, and Done Criteria.
@@ -163,24 +166,33 @@ Slash commands keep agents on track:
 
 | Command | Who | Purpose |
 |---------|-----|---------|
-| `/sting` | Bees | Self-check: on track? status updated? done? |
-| `/buzz` | Queen | Consolidate status from agent files, process INBOX |
+| `/buzz` | Any | Check in: plan hygiene, self-check, completion. Queen also coordinates hive. |
 | `/report` | Any | Submit out-of-scope discoveries to INBOX |
 | `/bedtime` | Any | Save status and plan state before break or session end |
-| `/refresh` | Any | Mid-session plan hygiene (update tasks, context, session state) |
 | `/session-report` | Queen | Write end-of-session report to SESSION_LOG.md |
 | `/deep-plan` | Queen | Structured exploration before plan creation |
 
 ## Configuration
 
-Claude Code works without configuration. For **AWS Bedrock**, create `.beehive.conf` in your project root:
+Claude Code works without configuration. Create `.beehive.conf` in your project root to customize:
 
+**API Proxy** (local proxy to Anthropic API):
+```bash
+CONF_ANTHROPIC_BASE_URL=http://localhost:8090
+CONF_ANTHROPIC_API_KEY=sk-ant-your-key
+```
+
+**AWS Bedrock:**
 ```bash
 CONF_AWS_PROFILE=my-profile
 CONF_AWS_REGION=us-west-2
 CONF_MODEL=us.anthropic.claude-sonnet-4-20250514-v1:0
-CONF_SESSION=my-session          # Optional: custom tmux session name
-CONF_CLAUDE_CMD=/path/to/claude  # Optional: custom claude path
+```
+
+**General options:**
+```bash
+CONF_SESSION=my-session          # Custom tmux session name
+CONF_CLAUDE_CMD=/path/to/claude  # Custom claude path
 ```
 
 **Tmux controls:**
@@ -207,6 +219,8 @@ Options:
     --model MODEL     Anthropic model override
     --profile PROF    AWS profile for Bedrock
     --region REGION   AWS region for Bedrock
+    --base-url URL    Anthropic API base URL (for API proxies)
+    --api-key KEY     Anthropic API key
     --yes             Skip confirmation
     --version         Show version
     --help            Show this help
@@ -234,6 +248,11 @@ Options:
 **Permission denied on symlink**
 - Use `sudo ln -sf ~/beehive/beehive /usr/local/bin/beehive`
 - Or symlink to `~/.local/bin` (add to PATH if needed)
+
+**"Cannot reach API proxy"**
+- Ensure your API proxy is running and accessible at the configured URL
+- Check the URL in `.beehive.conf` or `--base-url` flag
+- Beehive checks `{base_url}/health` with a 5-second timeout
 
 ## License
 

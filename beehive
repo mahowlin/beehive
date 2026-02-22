@@ -15,7 +15,7 @@
 
 set -e
 
-VERSION="0.3.1"
+VERSION="0.4.0"
 
 # Resolve symlinks to find actual script location (portable for Linux/macOS)
 SCRIPT_SOURCE="${BASH_SOURCE[0]}"
@@ -68,6 +68,8 @@ load_config() {
             CONF_MODEL)        ANTHROPIC_MODEL="$value" ;;
             CONF_SESSION)      SESSION_NAME="$value" ;;
             CONF_CLAUDE_CMD)   CLAUDE="$value" ;;
+            CONF_ANTHROPIC_BASE_URL)  ANTHROPIC_BASE_URL="$value" ;;
+            CONF_ANTHROPIC_API_KEY)   ANTHROPIC_API_KEY="$value" ;;
         esac
     done < "$config_path"
     return 0
@@ -167,7 +169,7 @@ init_commands() {
     local dir="$1"
     mkdir -p "$dir/.claude/commands"
 
-    for cmd in report sting buzz bedtime refresh session-report deep-plan; do
+    for cmd in report buzz bedtime session-report deep-plan; do
         [[ ! -f "$dir/.claude/commands/$cmd.md" ]] && cp "$SCRIPT_DIR/commands/$cmd.md" "$dir/.claude/commands/$cmd.md"
     done
 }
@@ -222,7 +224,7 @@ init_repo() {
 ## Guidelines
 - Ask approval before environment-impacting operations
 - Bees report completion to Queen for verification
-- Use /report, /sting, /buzz, /refresh, /bedtime, /session-report, /deep-plan commands
+- Use /buzz, /report, /bedtime, /session-report, /deep-plan commands
 EOF
 
     [[ ! -f "$dir/plans/_meta/TRACKER.md" ]] && cp "$SCRIPT_DIR/templates/TRACKER.md" "$dir/plans/_meta/TRACKER.md"
@@ -266,7 +268,7 @@ When assigned a plan, cd to the target repo and read its CLAUDE.md.
 ## Guidelines
 - Ask approval before environment-impacting operations
 - Bees report completion to Queen for verification
-- Use /report, /sting, /buzz, /refresh, /bedtime, /session-report, /deep-plan commands
+- Use /buzz, /report, /bedtime, /session-report, /deep-plan commands
 EOF
 
     [[ ! -f "$dir/WORKSPACE.md" ]] && {
@@ -341,6 +343,13 @@ do_launch() {
     # Check requirements
     command -v tmux &> /dev/null || die "tmux required. Install: brew install tmux"
 
+    # Health check for custom API endpoint
+    if [[ -n "$ANTHROPIC_BASE_URL" ]]; then
+        if ! curl -sf --max-time 5 "${ANTHROPIC_BASE_URL}/health" > /dev/null 2>&1; then
+            die "Cannot reach API proxy at $ANTHROPIC_BASE_URL/health — is it running?"
+        fi
+    fi
+
     if [[ "$mode" == "workspace" ]]; then
         [[ ! -f "$path/WORKSPACE.md" ]] && die "Not initialized. Run: beehive --init $path"
     else
@@ -352,6 +361,8 @@ do_launch() {
     local model_flag=""
     [[ -n "$AWS_PROFILE" ]] && env_vars+="AWS_PROFILE=$AWS_PROFILE "
     [[ -n "$AWS_REGION" ]] && env_vars+="AWS_REGION=$AWS_REGION "
+    [[ -n "$ANTHROPIC_BASE_URL" ]] && env_vars+="ANTHROPIC_BASE_URL=$ANTHROPIC_BASE_URL "
+    [[ -n "$ANTHROPIC_API_KEY" ]] && env_vars+="ANTHROPIC_API_KEY=$ANTHROPIC_API_KEY "
     [[ -n "$ANTHROPIC_MODEL" ]] && model_flag="--model $ANTHROPIC_MODEL"
 
     # Kill existing
@@ -384,7 +395,7 @@ do_launch() {
 
     local bee_prompt="Read CLAUDE.md, .skills/bee.md"
     [[ "$mode" == "workspace" ]] && bee_prompt+=", WORKSPACE.md"
-    bee_prompt+=", then $tracker and .hive/bee-%d.md. You are Bee %d. Follow your skill instructions. Update your status file. Use /report for discoveries, /sting to self-check, /bedtime to save state. Wait for user direction."
+    bee_prompt+=", then $tracker and .hive/bee-%d.md. You are Bee %d. Follow your skill instructions. Update your status file. Use /report for discoveries, /buzz to check in, /bedtime to save state. Wait for user direction."
 
     local queen_prompt="Read CLAUDE.md, .skills/queen.md"
     [[ "$mode" == "workspace" ]] && queen_prompt+=", WORKSPACE.md"
@@ -437,9 +448,13 @@ do_upgrade() {
 
     # Upgrade commands (overwrite)
     mkdir -p "$path/.claude/commands"
-    for cmd in report sting buzz bedtime refresh session-report deep-plan; do
+    for cmd in report buzz bedtime session-report deep-plan; do
         cp "$SCRIPT_DIR/commands/$cmd.md" "$path/.claude/commands/$cmd.md"
     done
+
+    # Clean up removed commands
+    rm -f "$path/.claude/commands/sting.md"
+    rm -f "$path/.claude/commands/refresh.md"
 
     # Upgrade plan template (overwrite)
     cp "$SCRIPT_DIR/templates/plan.md" "$path/plans/TEMPLATE.md"
@@ -476,6 +491,8 @@ Options:
     --model MODEL     Anthropic model override
     --profile PROF    AWS profile for Bedrock
     --region REGION   AWS region for Bedrock
+    --base-url URL    Anthropic API base URL (for API proxies)
+    --api-key KEY     Anthropic API key
     --yes             Skip confirmation
     --version         Show version
     --help            Show this help
@@ -485,6 +502,7 @@ Examples:
     beehive ~/myproject          # Run in specific path
     beehive --init ~/projects    # Initialize (auto-detects workspace vs repo)
     beehive --upgrade            # Upgrade skills/commands/template to latest
+    beehive --base-url http://localhost:8090 --api-key sk-ant-xxx --yes
 
 EOF
     exit 0
@@ -506,6 +524,8 @@ main() {
             --model)     ANTHROPIC_MODEL="$2"; shift 2 ;;
             --profile)   AWS_PROFILE="$2"; shift 2 ;;
             --region)    AWS_REGION="$2"; shift 2 ;;
+            --base-url)  ANTHROPIC_BASE_URL="$2"; shift 2 ;;
+            --api-key)   ANTHROPIC_API_KEY="$2"; shift 2 ;;
             --yes|-y)    skip_confirm=true; shift ;;
             --version)   echo "beehive v$VERSION"; exit 0 ;;
             --help|-h)   usage ;;
@@ -538,8 +558,11 @@ main() {
             fi
             info "Path: $path"
             [[ -n "$ANTHROPIC_MODEL" ]] && info "Model: $ANTHROPIC_MODEL"
-            [[ -n "$AWS_PROFILE" ]] && info "AWS Profile: $AWS_PROFILE"
-            [[ -n "$AWS_REGION" ]] && info "AWS Region: $AWS_REGION"
+            if [[ -n "$ANTHROPIC_BASE_URL" ]]; then
+                info "Backend: API proxy ($ANTHROPIC_BASE_URL)"
+            elif [[ -n "$AWS_PROFILE" ]]; then
+                info "Backend: Bedrock (profile: $AWS_PROFILE, region: ${AWS_REGION:-us-east-1})"
+            fi
             echo ""
 
             if ! $skip_confirm; then

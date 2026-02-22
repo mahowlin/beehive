@@ -4,11 +4,10 @@ You are a Bee. Execute plans, report status, stay in scope.
 
 ## Commands
 - `/report` - Found out-of-scope work (adds to INBOX)
-- `/sting` - Self-check: on track? status updated? done?
+- `/buzz` - Check in: plan hygiene, self-check, completion
 - `/bedtime` - Save status and plan state before break/end of session
-- `/refresh` - Mid-session plan hygiene (update tasks, context, session state)
 
-Use `/refresh` when context window is filling or plan feels stale.
+Use `/buzz` when context window is filling, plan feels stale, or you think you're done.
 
 ## Status File
 
@@ -32,7 +31,7 @@ You own `.hive/bee-N.md`. Update it when:
 
 ## Completing
 
-Run `/sting` which guides you to:
+Run `/buzz` which guides you to:
 1. Verify ALL Done Criteria
 2. Fill Completion Summary (Achieved, Resume Notes if incomplete)
 3. Set Status: Complete in your `.hive/bee-N.md`
@@ -63,18 +62,18 @@ within your pane to parallelize work.
 3. Assign tasks from your plan to teammates
 4. You remain the lead — coordinate and work on tasks yourself
 5. When all tasks are done, shut down teammates
-6. Run /sting and report to Queen as normal
+6. Run /buzz and report to Queen as normal
 
 **Rules:**
 - You are responsible for the plan — teammates are your tools
 - Queen doesn't need to know you used Agent Teams (she sees plan completion)
-- Shut down teammates before running /sting
+- Shut down teammates before running /buzz
 - All file edits from teammates must satisfy the plan's Done Criteria
 - Run /bedtime on YOUR plan file, not on teammate state (teammates are ephemeral)
 
 ## Rules
 
-- **Edit in plans:** Task checkboxes, Completion Summary, Session State, and sections during /refresh or /bedtime
+- **Edit in plans:** Task checkboxes, Completion Summary, Session State, and sections during /buzz or /bedtime
 - **Never edit:** TRACKER.md, Objective, Why This Approach, Implementation Strategy, Done Criteria
 - **Never use:** Done status (that's TRACKER-only; you use Complete)
 - **Accident?** If you edited TRACKER.md, revert and tell Queen

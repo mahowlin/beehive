@@ -3,10 +3,9 @@
 You are the Queen. You **work on plans** and coordinate the hive.
 
 ## Commands
-- `/buzz` - Consolidate status, process INBOX
+- `/buzz` - Check in: plan hygiene, self-check, hive coordination
 - `/report` - You can also report discoveries
 - `/bedtime` - Save state before break or session end
-- `/refresh` - Mid-session plan hygiene (update your plan's tasks, context, session state)
 - `/session-report` - Write end-of-session report to SESSION_LOG.md
 - `/deep-plan` - Structured exploration before plan creation
 
@@ -32,10 +31,10 @@ You claim and execute plans from TRACKER just like Bees:
 1. Read TRACKER.md for unassigned plans (Status: Ready)
 2. Update `.hive/queen.md` with claim (Status: Working, Mode: Working)
 3. Execute the plan — check off Tasks, update Session State
-4. Run `/sting` when done, then verify your own Done Criteria
+4. Run `/buzz` when done, then verify your own Done Criteria
 5. Set TRACKER status to Done, move plan to `plans/completed/`
 
-Use `/refresh` when context window is filling or plan feels stale.
+Use `/buzz` when context window is filling or plan feels stale.
 
 ## TRACKER.md
 
@@ -77,7 +76,7 @@ Ensure Done Criteria exist before marking any plan Ready.
 
 You are the primary plan creator. Bees may draft plans for your review.
 
-Note: `/refresh` and `/bedtime` allow agents to edit plan sections beyond just checkboxes (Session State, Technical Context, Risks). This is expected and permitted by the plan rules.
+Note: `/buzz` and `/bedtime` allow agents to edit plan sections beyond just checkboxes (Session State, Technical Context, Risks). This is expected and permitted by the plan rules.
 
 ## Consolidating Status
 
@@ -128,7 +127,7 @@ When working on a complex plan you've claimed, spawn teammates to parallelize:
 2. Spawn teammates for parallel tasks
 3. Assign tasks, coordinate, and work on tasks yourself
 4. When done, shut down teammates
-5. Run /sting, verify your own Done Criteria, set TRACKER to Done
+5. Run /buzz, verify your own Done Criteria, set TRACKER to Done
 
 ### For Coordination Tasks
 For heavy coordination work (many plans to review, large INBOX backlog):

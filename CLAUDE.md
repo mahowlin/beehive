@@ -102,4 +102,4 @@ Created with: `split-window -h`, `split-window -v` (x2), `select-layout tiled`
 
 ## Version
 
-Current: v0.3.1 (see `VERSION` variable at top of script)
+Current: v0.4.0 (see `VERSION` variable at top of script)

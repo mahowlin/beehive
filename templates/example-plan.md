@@ -1,9 +1,9 @@
 # Add User Authentication
 
 > **Rules (read before every task):**
-> - Edit ONLY: Task checkboxes, Completion Summary, Session State, and sections during /refresh or /bedtime
+> - Edit ONLY: Task checkboxes, Completion Summary, Session State, and sections during /buzz or /bedtime
 > - Out-of-scope work → /report
-> - Before finishing → /sting
+> - Before finishing → /buzz
 > - If you accidentally edited TRACKER.md → revert and tell Queen
 
 **Priority:** HIGH
@@ -52,7 +52,7 @@ Start with the data layer (password hashing on the User model), then build the A
 ---
 
 ## Session State
-<!-- Updated by /refresh and /bedtime — tracks live progress -->
+<!-- Updated by /buzz and /bedtime — tracks live progress -->
 
 **Last Updated:** -
 **Current Task:** -

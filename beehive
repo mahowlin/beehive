@@ -15,7 +15,7 @@
 
 set -e
 
-VERSION="0.4.0"
+VERSION="0.5.0"
 
 # Resolve symlinks to find actual script location (portable for Linux/macOS)
 SCRIPT_SOURCE="${BASH_SOURCE[0]}"
@@ -63,16 +63,51 @@ load_config() {
 
         # Only allow known config keys
         case "$key" in
-            CONF_AWS_PROFILE)  AWS_PROFILE="$value" ;;
-            CONF_AWS_REGION)   AWS_REGION="$value" ;;
-            CONF_MODEL)        ANTHROPIC_MODEL="$value" ;;
-            CONF_SESSION)      SESSION_NAME="$value" ;;
-            CONF_CLAUDE_CMD)   CLAUDE="$value" ;;
-            CONF_ANTHROPIC_BASE_URL)  ANTHROPIC_BASE_URL="$value" ;;
-            CONF_ANTHROPIC_API_KEY)   ANTHROPIC_API_KEY="$value" ;;
+            CONF_AWS_PROFILE)         CONF_AWS_PROFILE="$value" ;;
+            CONF_AWS_REGION)          CONF_AWS_REGION="$value" ;;
+            CONF_MODEL)               CONF_MODEL="$value" ;;
+            CONF_MODEL_BEE_1)         CONF_MODEL_BEE_1="$value" ;;
+            CONF_MODEL_BEE_2)         CONF_MODEL_BEE_2="$value" ;;
+            CONF_MODEL_BEE_3)         CONF_MODEL_BEE_3="$value" ;;
+            CONF_MODEL_QUEEN)         CONF_MODEL_QUEEN="$value" ;;
+            CONF_SESSION)             CONF_SESSION="$value" ;;
+            CONF_CLAUDE_CMD)          CONF_CLAUDE_CMD="$value" ;;
+            CONF_ANTHROPIC_BASE_URL)  CONF_ANTHROPIC_BASE_URL="$value" ;;
+            CONF_ANTHROPIC_API_KEY)   CONF_ANTHROPIC_API_KEY="$value" ;;
         esac
     done < "$config_path"
     return 0
+}
+
+resolve_setting() {
+    local cli_value="$1"
+    local cli_fallback="$2"
+    local config_value="$3"
+    local config_fallback="$4"
+
+    if [[ -n "$cli_value" ]]; then
+        echo "$cli_value"
+    elif [[ -n "$cli_fallback" ]]; then
+        echo "$cli_fallback"
+    elif [[ -n "$config_value" ]]; then
+        echo "$config_value"
+    elif [[ -n "$config_fallback" ]]; then
+        echo "$config_fallback"
+    fi
+}
+
+build_pane_command() {
+    local prompt="$1"
+    local model="$2"
+    local env_cmd=""
+
+    [[ -n "$AWS_PROFILE" ]] && env_cmd+="export AWS_PROFILE=$(printf '%q' "$AWS_PROFILE"); "
+    [[ -n "$AWS_REGION" ]] && env_cmd+="export AWS_REGION=$(printf '%q' "$AWS_REGION"); "
+    [[ -n "$ANTHROPIC_BASE_URL" ]] && env_cmd+="export ANTHROPIC_BASE_URL=$(printf '%q' "$ANTHROPIC_BASE_URL"); "
+    [[ -n "$ANTHROPIC_API_KEY" ]] && env_cmd+="export ANTHROPIC_API_KEY=$(printf '%q' "$ANTHROPIC_API_KEY"); "
+    [[ -n "$model" ]] && env_cmd+="export ANTHROPIC_MODEL=$(printf '%q' "$model"); "
+
+    printf '%s%s %q' "$env_cmd" "$CLAUDE" "$prompt"
 }
 
 #######################################
@@ -334,11 +369,17 @@ do_launch() {
 
     # Config already loaded before confirmation
 
+    AWS_PROFILE=$(resolve_setting "$CLI_AWS_PROFILE" "" "$CONF_AWS_PROFILE" "")
+    AWS_REGION=$(resolve_setting "$CLI_AWS_REGION" "" "$CONF_AWS_REGION" "")
+    ANTHROPIC_BASE_URL=$(resolve_setting "$CLI_ANTHROPIC_BASE_URL" "" "$CONF_ANTHROPIC_BASE_URL" "")
+    ANTHROPIC_API_KEY=$(resolve_setting "$CLI_ANTHROPIC_API_KEY" "" "$CONF_ANTHROPIC_API_KEY" "")
+    CLAUDE=$(resolve_setting "$CLI_CLAUDE_CMD" "" "$CONF_CLAUDE_CMD" "")
+
     # Find claude
     CLAUDE=$(find_claude) || die "Claude CLI not found. Install from: https://claude.ai/claude-code"
 
     # Session name
-    SESSION_NAME="${SESSION_NAME:-$(basename "$path")}"
+    SESSION_NAME="$(resolve_setting "$CLI_SESSION_NAME" "" "$CONF_SESSION" "$(basename "$path")")"
 
     # Check requirements
     command -v tmux &> /dev/null || die "tmux required. Install: brew install tmux"
@@ -356,14 +397,13 @@ do_launch() {
         [[ ! -f "$path/CLAUDE.md" ]] && die "Not initialized. Run: beehive --init $path"
     fi
 
-    # Build env vars and model flag
-    local env_vars=""
-    local model_flag=""
-    [[ -n "$AWS_PROFILE" ]] && env_vars+="AWS_PROFILE=$AWS_PROFILE "
-    [[ -n "$AWS_REGION" ]] && env_vars+="AWS_REGION=$AWS_REGION "
-    [[ -n "$ANTHROPIC_BASE_URL" ]] && env_vars+="ANTHROPIC_BASE_URL=$ANTHROPIC_BASE_URL "
-    [[ -n "$ANTHROPIC_API_KEY" ]] && env_vars+="ANTHROPIC_API_KEY=$ANTHROPIC_API_KEY "
-    [[ -n "$ANTHROPIC_MODEL" ]] && model_flag="--model $ANTHROPIC_MODEL"
+    local bee_1_model bee_2_model bee_3_model queen_model
+    local bee_1_command bee_2_command bee_3_command queen_command
+
+    bee_1_model=$(resolve_setting "$CLI_MODEL_BEE_1" "$CLI_MODEL" "$CONF_MODEL_BEE_1" "$CONF_MODEL")
+    bee_2_model=$(resolve_setting "$CLI_MODEL_BEE_2" "$CLI_MODEL" "$CONF_MODEL_BEE_2" "$CONF_MODEL")
+    bee_3_model=$(resolve_setting "$CLI_MODEL_BEE_3" "$CLI_MODEL" "$CONF_MODEL_BEE_3" "$CONF_MODEL")
+    queen_model=$(resolve_setting "$CLI_MODEL_QUEEN" "$CLI_MODEL" "$CONF_MODEL_QUEEN" "$CONF_MODEL")
 
     # Kill existing
     tmux kill-session -t "$SESSION_NAME" 2>/dev/null || true
@@ -402,15 +442,27 @@ do_launch() {
     queen_prompt+=", then $tracker and .hive/queen.md. You are the Queen. Follow your skill instructions. You work on plans AND coordinate. Use /buzz to consolidate, /session-report at end of session. Wait for user direction."
 
     # Launch
-    for i in 0 1 2; do
-        local prompt
-        local bee_num=$((i + 1))
-        # shellcheck disable=SC2059
-        printf -v prompt "$bee_prompt" "$bee_num" "$bee_num"
-        tmux send-keys -t "$SESSION_NAME:0.$i" "${env_vars}${CLAUDE} ${model_flag} '$prompt'" Enter
-        sleep 1
-    done
-    tmux send-keys -t "$SESSION_NAME:0.3" "${env_vars}${CLAUDE} ${model_flag} '$queen_prompt'" Enter
+    local prompt
+    # shellcheck disable=SC2059
+    printf -v prompt "$bee_prompt" 1 1
+    bee_1_command=$(build_pane_command "$prompt" "$bee_1_model")
+    tmux send-keys -t "$SESSION_NAME:0.0" "$bee_1_command" Enter
+    sleep 1
+
+    # shellcheck disable=SC2059
+    printf -v prompt "$bee_prompt" 2 2
+    bee_2_command=$(build_pane_command "$prompt" "$bee_2_model")
+    tmux send-keys -t "$SESSION_NAME:0.1" "$bee_2_command" Enter
+    sleep 1
+
+    # shellcheck disable=SC2059
+    printf -v prompt "$bee_prompt" 3 3
+    bee_3_command=$(build_pane_command "$prompt" "$bee_3_model")
+    tmux send-keys -t "$SESSION_NAME:0.2" "$bee_3_command" Enter
+    sleep 1
+
+    queen_command=$(build_pane_command "$queen_prompt" "$queen_model")
+    tmux send-keys -t "$SESSION_NAME:0.3" "$queen_command" Enter
     tmux select-pane -t "$SESSION_NAME:0.3"
 
     echo ""
@@ -487,15 +539,19 @@ Commands:
     beehive --upgrade [path] Upgrade skills, commands, and template (preserves data)
 
 Options:
-    --session NAME    Session name (default: folder name)
-    --model MODEL     Anthropic model override
-    --profile PROF    AWS profile for Bedrock
-    --region REGION   AWS region for Bedrock
-    --base-url URL    Anthropic API base URL (for API proxies)
-    --api-key KEY     Anthropic API key
-    --yes             Skip confirmation
-    --version         Show version
-    --help            Show this help
+    --session NAME       Session name (default: folder name)
+    --model MODEL        Anthropic model fallback for all panes
+    --bee-1-model MODEL  Anthropic model override for Bee 1
+    --bee-2-model MODEL  Anthropic model override for Bee 2
+    --bee-3-model MODEL  Anthropic model override for Bee 3
+    --queen-model MODEL  Anthropic model override for Queen
+    --profile PROF       AWS profile for Bedrock
+    --region REGION      AWS region for Bedrock
+    --base-url URL       Anthropic API base URL (for API proxies)
+    --api-key KEY        Anthropic API key
+    --yes                Skip confirmation
+    --version            Show version
+    --help               Show this help
 
 Examples:
     beehive                      # Run in current directory
@@ -516,21 +572,37 @@ main() {
     local path=""
     local skip_confirm=false
 
+    local CLI_SESSION_NAME=""
+    local CLI_MODEL=""
+    local CLI_MODEL_BEE_1=""
+    local CLI_MODEL_BEE_2=""
+    local CLI_MODEL_BEE_3=""
+    local CLI_MODEL_QUEEN=""
+    local CLI_AWS_PROFILE=""
+    local CLI_AWS_REGION=""
+    local CLI_ANTHROPIC_BASE_URL=""
+    local CLI_ANTHROPIC_API_KEY=""
+    local CLI_CLAUDE_CMD=""
+
     while [[ $# -gt 0 ]]; do
         case "$1" in
-            --init)      cmd="init"; shift ;;
-            --upgrade)   cmd="upgrade"; shift ;;
-            --session)   SESSION_NAME="$2"; shift 2 ;;
-            --model)     ANTHROPIC_MODEL="$2"; shift 2 ;;
-            --profile)   AWS_PROFILE="$2"; shift 2 ;;
-            --region)    AWS_REGION="$2"; shift 2 ;;
-            --base-url)  ANTHROPIC_BASE_URL="$2"; shift 2 ;;
-            --api-key)   ANTHROPIC_API_KEY="$2"; shift 2 ;;
-            --yes|-y)    skip_confirm=true; shift ;;
-            --version)   echo "beehive v$VERSION"; exit 0 ;;
-            --help|-h)   usage ;;
-            -*)          die "Unknown option: $1" ;;
-            *)           path="$1"; shift ;;
+            --init)         cmd="init"; shift ;;
+            --upgrade)      cmd="upgrade"; shift ;;
+            --session)      CLI_SESSION_NAME="$2"; shift 2 ;;
+            --model)        CLI_MODEL="$2"; shift 2 ;;
+            --bee-1-model)  CLI_MODEL_BEE_1="$2"; shift 2 ;;
+            --bee-2-model)  CLI_MODEL_BEE_2="$2"; shift 2 ;;
+            --bee-3-model)  CLI_MODEL_BEE_3="$2"; shift 2 ;;
+            --queen-model)  CLI_MODEL_QUEEN="$2"; shift 2 ;;
+            --profile)      CLI_AWS_PROFILE="$2"; shift 2 ;;
+            --region)       CLI_AWS_REGION="$2"; shift 2 ;;
+            --base-url)     CLI_ANTHROPIC_BASE_URL="$2"; shift 2 ;;
+            --api-key)      CLI_ANTHROPIC_API_KEY="$2"; shift 2 ;;
+            --yes|-y)       skip_confirm=true; shift ;;
+            --version)      echo "beehive v$VERSION"; exit 0 ;;
+            --help|-h)      usage ;;
+            -*)             die "Unknown option: $1" ;;
+            *)              path="$1"; shift ;;
         esac
     done
 
@@ -546,10 +618,26 @@ main() {
             echo ""
 
             local mode
+            local display_session_name display_model display_bee_1_model display_bee_2_model display_bee_3_model display_queen_model
+            local per_agent_models=false
             mode=$(detect_mode "$path")
 
             # Load config early to show settings
             load_config "$path" || true
+
+            display_session_name=$(resolve_setting "$CLI_SESSION_NAME" "" "$CONF_SESSION" "$(basename "$path")")
+            display_model=$(resolve_setting "$CLI_MODEL" "" "$CONF_MODEL" "")
+            display_bee_1_model=$(resolve_setting "$CLI_MODEL_BEE_1" "$CLI_MODEL" "$CONF_MODEL_BEE_1" "$CONF_MODEL")
+            display_bee_2_model=$(resolve_setting "$CLI_MODEL_BEE_2" "$CLI_MODEL" "$CONF_MODEL_BEE_2" "$CONF_MODEL")
+            display_bee_3_model=$(resolve_setting "$CLI_MODEL_BEE_3" "$CLI_MODEL" "$CONF_MODEL_BEE_3" "$CONF_MODEL")
+            display_queen_model=$(resolve_setting "$CLI_MODEL_QUEEN" "$CLI_MODEL" "$CONF_MODEL_QUEEN" "$CONF_MODEL")
+
+            [[ -n "$CLI_MODEL_BEE_1$CLI_MODEL_BEE_2$CLI_MODEL_BEE_3$CLI_MODEL_QUEEN$CONF_MODEL_BEE_1$CONF_MODEL_BEE_2$CONF_MODEL_BEE_3$CONF_MODEL_QUEEN" ]] && per_agent_models=true
+
+            AWS_PROFILE=$(resolve_setting "$CLI_AWS_PROFILE" "" "$CONF_AWS_PROFILE" "")
+            AWS_REGION=$(resolve_setting "$CLI_AWS_REGION" "" "$CONF_AWS_REGION" "")
+            ANTHROPIC_BASE_URL=$(resolve_setting "$CLI_ANTHROPIC_BASE_URL" "" "$CONF_ANTHROPIC_BASE_URL" "")
+            ANTHROPIC_API_KEY=$(resolve_setting "$CLI_ANTHROPIC_API_KEY" "" "$CONF_ANTHROPIC_API_KEY" "")
 
             if [[ "$mode" == "workspace" ]]; then
                 info "Mode: Workspace"
@@ -557,7 +645,15 @@ main() {
                 info "Mode: Single repo"
             fi
             info "Path: $path"
-            [[ -n "$ANTHROPIC_MODEL" ]] && info "Model: $ANTHROPIC_MODEL"
+            info "Session: $display_session_name"
+            if $per_agent_models; then
+                [[ -n "$display_bee_1_model" ]] && info "Bee 1 model: $display_bee_1_model"
+                [[ -n "$display_bee_2_model" ]] && info "Bee 2 model: $display_bee_2_model"
+                [[ -n "$display_bee_3_model" ]] && info "Bee 3 model: $display_bee_3_model"
+                [[ -n "$display_queen_model" ]] && info "Queen model: $display_queen_model"
+            elif [[ -n "$display_model" ]]; then
+                info "Model: $display_model"
+            fi
             if [[ -n "$ANTHROPIC_BASE_URL" ]]; then
                 info "Backend: API proxy ($ANTHROPIC_BASE_URL)"
             elif [[ -n "$AWS_PROFILE" ]]; then

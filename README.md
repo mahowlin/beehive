@@ -45,10 +45,8 @@ cat > .beehive.conf << 'EOF'
 CONF_ANTHROPIC_BASE_URL=http://localhost:8090
 CONF_ANTHROPIC_API_KEY=sk-ant-your-key
 
-# OR: AWS Bedrock
-# CONF_AWS_PROFILE=my-profile
-# CONF_AWS_REGION=us-west-2
-# CONF_MODEL=us.anthropic.claude-sonnet-4-20250514-v1:0
+# Optional shared fallback model for all panes
+CONF_MODEL=claude-opus-4-6
 EOF
 
 # 5. Launch
@@ -176,11 +174,28 @@ Slash commands keep agents on track:
 
 Claude Code works without configuration. Create `.beehive.conf` in your project root to customize:
 
-**API Proxy** (local proxy to Anthropic API):
+**API proxy** (recommended for per-agent models):
 ```bash
 CONF_ANTHROPIC_BASE_URL=http://localhost:8090
 CONF_ANTHROPIC_API_KEY=sk-ant-your-key
+
+# Shared fallback for every pane
+CONF_MODEL=claude-opus-4-6
+
+# Optional per-agent overrides
+CONF_MODEL_BEE_1=gpt-5.4
+CONF_MODEL_BEE_2=gpt-5.4
+CONF_MODEL_BEE_3=gpt-5.4
+CONF_MODEL_QUEEN=claude-opus-4-6
 ```
+
+Beehive resolves models with this precedence:
+1. Per-agent CLI flag (`--bee-1-model`, `--bee-2-model`, `--bee-3-model`, `--queen-model`)
+2. Global CLI flag (`--model`)
+3. Per-agent config key (`CONF_MODEL_BEE_1`, etc.)
+4. Global config key (`CONF_MODEL`)
+
+Before starting `claude` in each tmux pane, Beehive exports that pane's `ANTHROPIC_MODEL`. When you use an API proxy, it also exports `ANTHROPIC_BASE_URL` and `ANTHROPIC_API_KEY` in each pane.
 
 **AWS Bedrock:**
 ```bash
@@ -215,15 +230,29 @@ Commands:
     beehive --upgrade [path] Upgrade skills, commands, and template (preserves data)
 
 Options:
-    --session NAME    Session name (default: folder name)
-    --model MODEL     Anthropic model override
-    --profile PROF    AWS profile for Bedrock
-    --region REGION   AWS region for Bedrock
-    --base-url URL    Anthropic API base URL (for API proxies)
-    --api-key KEY     Anthropic API key
-    --yes             Skip confirmation
-    --version         Show version
-    --help            Show this help
+    --session NAME       Session name (default: folder name)
+    --model MODEL        Anthropic model fallback for all panes
+    --bee-1-model MODEL  Anthropic model override for Bee 1
+    --bee-2-model MODEL  Anthropic model override for Bee 2
+    --bee-3-model MODEL  Anthropic model override for Bee 3
+    --queen-model MODEL  Anthropic model override for Queen
+    --profile PROF       AWS profile for Bedrock
+    --region REGION      AWS region for Bedrock
+    --base-url URL       Anthropic API base URL (for API proxies)
+    --api-key KEY        Anthropic API key
+    --yes                Skip confirmation
+    --version            Show version
+    --help               Show this help
+```
+
+Example:
+```bash
+beehive \
+  --model claude-opus-4-6 \
+  --bee-1-model claude-sonnet-4-6 \
+  --queen-model claude-opus-4-6 \
+  --base-url http://localhost:8090 \
+  --api-key sk-ant-your-key
 ```
 
 ## Troubleshooting

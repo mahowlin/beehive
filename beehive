@@ -5,9 +5,11 @@
 #   beehive [path]           Run agents (auto-detects mode)
 #   beehive --init [path]    Initialize repo/workspace structure
 #   beehive --upgrade [path] Upgrade skills, commands, and template
+#   beehive --status [path]  Show work items, agent states, and inbox
+#   beehive --validate [path] Validate JSONL state files
 #
 # The tool auto-detects:
-#   - Workspace mode: if path contains WORKSPACE.md or multiple git repos
+#   - Workspace mode: if path contains multiple git repos
 #   - Single repo mode: if path is a single repository
 #
 # This uses an interactive model where the user directs agents and copies
@@ -15,7 +17,7 @@
 
 set -e
 
-VERSION="0.4.0"
+VERSION="0.5.0"
 
 # Resolve symlinks to find actual script location (portable for Linux/macOS)
 SCRIPT_SOURCE="${BASH_SOURCE[0]}"
@@ -43,6 +45,7 @@ die() { echo -e "${RED}ERROR: $1${NC}" >&2; exit 1; }
 warn() { echo -e "${YELLOW}WARNING: $1${NC}" >&2; }
 info() { echo -e "${CYAN}$1${NC}"; }
 success() { echo -e "${GREEN}$1${NC}"; }
+require_jq() { command -v jq &>/dev/null || die "jq required. Install: brew install jq / apt install jq"; }
 
 #######################################
 # Parse config file safely (no source)
@@ -61,15 +64,17 @@ load_config() {
         key=$(echo "$key" | xargs)
         value=$(echo "$value" | xargs | sed 's/^["'"'"']//;s/["'"'"']$//')
 
-        # Only allow known config keys
+        # Only allow known config keys (store as CONF_* to avoid clobbering CLI args)
         case "$key" in
-            CONF_AWS_PROFILE)  AWS_PROFILE="$value" ;;
-            CONF_AWS_REGION)   AWS_REGION="$value" ;;
-            CONF_MODEL)        ANTHROPIC_MODEL="$value" ;;
-            CONF_SESSION)      SESSION_NAME="$value" ;;
-            CONF_CLAUDE_CMD)   CLAUDE="$value" ;;
-            CONF_ANTHROPIC_BASE_URL)  ANTHROPIC_BASE_URL="$value" ;;
-            CONF_ANTHROPIC_API_KEY)   ANTHROPIC_API_KEY="$value" ;;
+            CONF_AWS_PROFILE)         CONF_AWS_PROFILE="$value" ;;
+            CONF_AWS_REGION)          CONF_AWS_REGION="$value" ;;
+            CONF_MODEL)               CONF_MODEL="$value" ;;
+            CONF_MODEL_BEE)           CONF_MODEL_BEE="$value" ;;
+            CONF_MODEL_QUEEN)         CONF_MODEL_QUEEN="$value" ;;
+            CONF_SESSION)             CONF_SESSION="$value" ;;
+            CONF_CLAUDE_CMD)          CONF_CLAUDE_CMD="$value" ;;
+            CONF_ANTHROPIC_BASE_URL)  CONF_ANTHROPIC_BASE_URL="$value" ;;
+            CONF_ANTHROPIC_API_KEY)   CONF_ANTHROPIC_API_KEY="$value" ;;
         esac
     done < "$config_path"
     return 0
@@ -94,7 +99,7 @@ detect_clipboard() {
 # Find claude command
 #######################################
 find_claude() {
-    [[ -n "$CLAUDE" ]] && command -v "$CLAUDE" &> /dev/null && echo "$CLAUDE" && return 0
+    [[ -n "$CONF_CLAUDE_CMD" ]] && command -v "$CONF_CLAUDE_CMD" &> /dev/null && echo "$CONF_CLAUDE_CMD" && return 0
 
     for loc in claude /opt/homebrew/bin/claude /usr/local/bin/claude "$HOME/.local/bin/claude"; do
         command -v "$loc" &> /dev/null && echo "$loc" && return 0
@@ -103,18 +108,42 @@ find_claude() {
 }
 
 #######################################
+# Resolve setting with 4-tier precedence:
+#   specific CLI → global CLI/config → role config → global config
+#######################################
+resolve_setting() {
+    local cli_value="$1" cli_fallback="$2" config_value="$3" config_fallback="$4"
+    if [[ -n "$cli_value" ]]; then echo "$cli_value"
+    elif [[ -n "$cli_fallback" ]]; then echo "$cli_fallback"
+    elif [[ -n "$config_value" ]]; then echo "$config_value"
+    elif [[ -n "$config_fallback" ]]; then echo "$config_fallback"
+    fi
+}
+
+#######################################
+# Build per-pane shell command with env vars and model
+#######################################
+build_pane_command() {
+    local prompt="$1" model="$2"
+    local env_cmd=""
+    [[ -n "$AWS_PROFILE" ]] && env_cmd+="export AWS_PROFILE=$(printf '%q' "$AWS_PROFILE"); "
+    [[ -n "$AWS_REGION" ]] && env_cmd+="export AWS_REGION=$(printf '%q' "$AWS_REGION"); "
+    [[ -n "$ANTHROPIC_BASE_URL" ]] && env_cmd+="export ANTHROPIC_BASE_URL=$(printf '%q' "$ANTHROPIC_BASE_URL"); "
+    [[ -n "$ANTHROPIC_API_KEY" ]] && env_cmd+="export ANTHROPIC_API_KEY=$(printf '%q' "$ANTHROPIC_API_KEY"); "
+    [[ -n "$model" ]] && env_cmd+="export ANTHROPIC_MODEL=$(printf '%q' "$model"); "
+    printf '%s%s %q' "$env_cmd" "$CLAUDE" "$prompt"
+}
+
+#######################################
 # Detect if path is workspace or repo
 #######################################
 detect_mode() {
     local path="$1"
 
-    # Explicit workspace marker
-    [[ -f "$path/WORKSPACE.md" ]] && echo "workspace" && return
-
     # Count git repos in directory
     local git_count=0
     for dir in "$path"/*/; do
-        [[ -d "$dir/.git" ]] && ((git_count++))
+        [[ -d "$dir/.git" ]] && git_count=$((git_count + 1))
     done
 
     # Multiple git repos = workspace, otherwise single repo
@@ -143,34 +172,29 @@ init_skills() {
     local dir="$1"
     mkdir -p "$dir/.skills"
 
-    [[ ! -f "$dir/.skills/bee.md" ]] && cp "$SCRIPT_DIR/skills/bee.md" "$dir/.skills/bee.md"
-    [[ ! -f "$dir/.skills/queen.md" ]] && cp "$SCRIPT_DIR/skills/queen.md" "$dir/.skills/queen.md"
+    [[ -f "$dir/.skills/bee.md" ]] || cp "$SCRIPT_DIR/skills/bee.md" "$dir/.skills/bee.md"
+    [[ -f "$dir/.skills/queen.md" ]] || cp "$SCRIPT_DIR/skills/queen.md" "$dir/.skills/queen.md"
 }
 
-init_hive() {
+init_jsonl() {
     local dir="$1"
-    mkdir -p "$dir/.hive"
+    local meta="$dir/plans/_meta"
+    mkdir -p "$meta/claims"
 
-    for i in 1 2 3; do
-        if [[ ! -f "$dir/.hive/bee-$i.md" ]]; then
-            sed "s/Bee N/Bee $i/g" "$SCRIPT_DIR/templates/bee-status.md" > "$dir/.hive/bee-$i.md"
-        fi
+    for f in work.jsonl inbox.jsonl sessions.jsonl archive.jsonl; do
+        [[ -f "$meta/$f" ]] || touch "$meta/$f"
     done
-
-    [[ ! -f "$dir/.hive/queen.md" ]] && cp "$SCRIPT_DIR/templates/queen-status.md" "$dir/.hive/queen.md"
-}
-
-init_inbox() {
-    local dir="$1"
-    [[ ! -f "$dir/plans/INBOX.md" ]] && cp "$SCRIPT_DIR/templates/INBOX.md" "$dir/plans/INBOX.md"
+    for agent in bee-1 bee-2 bee-3 queen; do
+        [[ -f "$meta/claims/$agent.jsonl" ]] || touch "$meta/claims/$agent.jsonl"
+    done
 }
 
 init_commands() {
     local dir="$1"
     mkdir -p "$dir/.claude/commands"
 
-    for cmd in report buzz bedtime session-report deep-plan; do
-        [[ ! -f "$dir/.claude/commands/$cmd.md" ]] && cp "$SCRIPT_DIR/commands/$cmd.md" "$dir/.claude/commands/$cmd.md"
+    for cmd in report buzz bedtime session-report deep-plan review; do
+        [[ -f "$dir/.claude/commands/$cmd.md" ]] || cp "$SCRIPT_DIR/commands/$cmd.md" "$dir/.claude/commands/$cmd.md"
     done
 }
 
@@ -184,18 +208,23 @@ init_gitignore() {
         return
     fi
 
-    # If .gitignore exists, ensure .hive/ is in it
-    if ! grep -q "^\.hive/" "$gitignore" 2>/dev/null; then
+    # If .gitignore exists, ensure claims/ is in it
+    if ! grep -q "plans/_meta/claims/" "$gitignore" 2>/dev/null; then
         echo "" >> "$gitignore"
-        echo "# Beehive status files" >> "$gitignore"
-        echo ".hive/" >> "$gitignore"
+        echo "# Beehive agent state (session-specific)" >> "$gitignore"
+        echo "plans/_meta/claims/" >> "$gitignore"
+    fi
+
+    # Remove stale .hive/ entry from old versions
+    if grep -q '^\.hive/' "$gitignore" 2>/dev/null; then
+        sed -i.bak '/^\.hive\//d' "$gitignore" && rm -f "$gitignore.bak"
     fi
 }
 
 init_template() {
     local dir="$1"
 
-    [[ ! -f "$dir/plans/TEMPLATE.md" ]] && cp "$SCRIPT_DIR/templates/plan.md" "$dir/plans/TEMPLATE.md"
+    [[ -f "$dir/plans/TEMPLATE.md" ]] || cp "$SCRIPT_DIR/templates/plan.md" "$dir/plans/TEMPLATE.md"
 }
 
 init_repo() {
@@ -210,16 +239,14 @@ init_repo() {
 <!-- Describe the project -->
 
 ## Agent Roles
-- **Queen (🐝)**: Works on plans, coordinates hive, tracks progress, verifies completion. Read `.skills/queen.md`
-- **Bees (🐝)**: Execute plans, update status, report discoveries. Read `.skills/bee.md`
+- **Queen**: Works on plans, coordinates hive, tracks progress, verifies completion. Read `.skills/queen.md`
+- **Bees**: Execute plans, update status, report discoveries. Read `.skills/bee.md`
 
 ## Coordination Files
-- `plans/_meta/TRACKER.md` - Plan status (Queen owns)
-- `plans/_meta/SESSION_LOG.md` - Session notes (Queen owns)
-- `plans/_meta/DEPENDENCIES.md` - Dependency graph (Queen owns)
-- `.hive/bee-N.md` - Bee status files (each Bee owns their own)
-- `.hive/queen.md` - Queen status file (Queen owns)
-- `plans/INBOX.md` - Plan requests from Bees
+- `plans/_meta/work.jsonl` - Work items: plans and tasks (Queen owns)
+- `plans/_meta/inbox.jsonl` - Out-of-scope reports from Bees (Bees append, Queen processes)
+- `plans/_meta/sessions.jsonl` - Session reports (Queen owns)
+- `plans/_meta/claims/{agent}.jsonl` - Agent state (each agent owns their own)
 
 ## Guidelines
 - Ask approval before environment-impacting operations
@@ -227,13 +254,8 @@ init_repo() {
 - Use /buzz, /report, /bedtime, /session-report, /deep-plan commands
 EOF
 
-    [[ ! -f "$dir/plans/_meta/TRACKER.md" ]] && cp "$SCRIPT_DIR/templates/TRACKER.md" "$dir/plans/_meta/TRACKER.md"
-    [[ ! -f "$dir/plans/_meta/SESSION_LOG.md" ]] && cp "$SCRIPT_DIR/templates/SESSION_LOG.md" "$dir/plans/_meta/SESSION_LOG.md"
-    [[ ! -f "$dir/plans/_meta/DEPENDENCIES.md" ]] && cp "$SCRIPT_DIR/templates/DEPENDENCIES.md" "$dir/plans/_meta/DEPENDENCIES.md"
-
+    init_jsonl "$dir"
     init_skills "$dir"
-    init_hive "$dir"
-    init_inbox "$dir"
     init_commands "$dir"
     init_template "$dir"
     init_gitignore "$dir"
@@ -247,59 +269,36 @@ init_workspace() {
     mkdir -p "$dir/plans/completed"
     mkdir -p "$dir/plans/_meta"
 
-    [[ ! -f "$dir/CLAUDE.md" ]] && cat > "$dir/CLAUDE.md" << 'EOF'
-# Workspace Instructions
-
-Multi-repo workspace. Read WORKSPACE.md for repo overview, plans/_meta/TRACKER.md for active plans.
-When assigned a plan, cd to the target repo and read its CLAUDE.md.
-
-## Agent Roles
-- **Queen (🐝)**: Works on plans, coordinates hive, tracks progress, verifies completion. Read `.skills/queen.md`
-- **Bees (🐝)**: Execute plans, update status, report discoveries. Read `.skills/bee.md`
-
-## Coordination Files
-- `plans/_meta/TRACKER.md` - Plan status (Queen owns)
-- `plans/_meta/SESSION_LOG.md` - Session notes (Queen owns)
-- `plans/_meta/DEPENDENCIES.md` - Dependency graph (Queen owns)
-- `.hive/bee-N.md` - Bee status files (each Bee owns their own)
-- `.hive/queen.md` - Queen status file (Queen owns)
-- `plans/INBOX.md` - Plan requests from Bees
-
-## Guidelines
-- Ask approval before environment-impacting operations
-- Bees report completion to Queen for verification
-- Use /buzz, /report, /bedtime, /session-report, /deep-plan commands
-EOF
-
-    [[ ! -f "$dir/WORKSPACE.md" ]] && {
+    [[ ! -f "$dir/CLAUDE.md" ]] && {
         {
-            echo "# Workspace Overview"
+            echo "# Workspace Instructions"
+            echo ""
+            echo "Multi-repo workspace. All coordination via \`plans/_meta/\`."
+            echo "When assigned a plan, cd to the target repo and read its CLAUDE.md."
             echo ""
             echo "## Repositories"
-            echo "| Repository | Description | Status |"
-            echo "|------------|-------------|--------|"
+            echo "| Repository | Description |"
+            echo "|------------|-------------|"
             for repo in "$dir"/*/; do
-                [[ -d "$repo/.git" ]] && echo "| $(basename "$repo") | - | - |"
+                [[ -d "$repo/.git" ]] && echo "| \`$(basename "$repo")/\` | <!-- describe --> |"
             done
-        } > "$dir/WORKSPACE.md"
+            echo ""
+            echo "## Agent Roles"
+            echo "- **Queen**: Works on plans, coordinates hive, tracks progress, verifies completion. Read \`.skills/queen.md\`"
+            echo "- **Bees**: Execute plans, update status, report discoveries. Read \`.skills/bee.md\`"
+            echo ""
+            echo "## Coordination Files"
+            echo "- \`plans/_meta/work.jsonl\` - Work items: plans and tasks (Queen owns)"
+            echo "- \`plans/_meta/inbox.jsonl\` - Out-of-scope reports from Bees (Bees append, Queen processes)"
+            echo "- \`plans/_meta/sessions.jsonl\` - Session reports (Queen owns)"
+            echo "- \`plans/_meta/claims/{agent}.jsonl\` - Agent state (each agent owns their own)"
+            echo ""
+            echo "## Guidelines"
+            echo "- Ask approval before environment-impacting operations"
+            echo "- Bees report completion to Queen for verification"
+            echo "- Use /buzz, /report, /bedtime, /session-report, /deep-plan commands"
+        } > "$dir/CLAUDE.md"
     }
-
-    [[ ! -f "$dir/plans/_meta/TRACKER.md" ]] && cat > "$dir/plans/_meta/TRACKER.md" << 'EOF'
-# Workspace Tracker
-
-**Points Scale:** 1 = Small, 2 = Medium, 3 = Large
-
-## Active Plans
-| Plan | Pts | Repository | Priority | Status | Assigned |
-|------|-----|------------|----------|--------|----------|
-
-## Completed
-| Plan | Pts | Repository | Outcome |
-|------|-----|------------|---------|
-EOF
-
-    [[ ! -f "$dir/plans/_meta/SESSION_LOG.md" ]] && cp "$SCRIPT_DIR/templates/SESSION_LOG.md" "$dir/plans/_meta/SESSION_LOG.md"
-    [[ ! -f "$dir/plans/_meta/DEPENDENCIES.md" ]] && cp "$SCRIPT_DIR/templates/DEPENDENCIES.md" "$dir/plans/_meta/DEPENDENCIES.md"
 
     # Add CLAUDE.md to repos that don't have one
     for repo in "$dir"/*/; do
@@ -313,9 +312,8 @@ EOF
         }
     done
 
+    init_jsonl "$dir"
     init_skills "$dir"
-    init_hive "$dir"
-    init_inbox "$dir"
     init_commands "$dir"
     init_template "$dir"
     init_gitignore "$dir"
@@ -328,7 +326,7 @@ EOF
 # Launch agents
 #######################################
 do_launch() {
-    local path="$1"
+    local path="$1" bee_model="$2" queen_model="$3"
     local mode
     mode=$(detect_mode "$path")
 
@@ -336,9 +334,6 @@ do_launch() {
 
     # Find claude
     CLAUDE=$(find_claude) || die "Claude CLI not found. Install from: https://claude.ai/claude-code"
-
-    # Session name
-    SESSION_NAME="${SESSION_NAME:-$(basename "$path")}"
 
     # Check requirements
     command -v tmux &> /dev/null || die "tmux required. Install: brew install tmux"
@@ -350,20 +345,7 @@ do_launch() {
         fi
     fi
 
-    if [[ "$mode" == "workspace" ]]; then
-        [[ ! -f "$path/WORKSPACE.md" ]] && die "Not initialized. Run: beehive --init $path"
-    else
-        [[ ! -f "$path/CLAUDE.md" ]] && die "Not initialized. Run: beehive --init $path"
-    fi
-
-    # Build env vars and model flag
-    local env_vars=""
-    local model_flag=""
-    [[ -n "$AWS_PROFILE" ]] && env_vars+="AWS_PROFILE=$AWS_PROFILE "
-    [[ -n "$AWS_REGION" ]] && env_vars+="AWS_REGION=$AWS_REGION "
-    [[ -n "$ANTHROPIC_BASE_URL" ]] && env_vars+="ANTHROPIC_BASE_URL=$ANTHROPIC_BASE_URL "
-    [[ -n "$ANTHROPIC_API_KEY" ]] && env_vars+="ANTHROPIC_API_KEY=$ANTHROPIC_API_KEY "
-    [[ -n "$ANTHROPIC_MODEL" ]] && model_flag="--model $ANTHROPIC_MODEL"
+    [[ ! -f "$path/CLAUDE.md" ]] && die "Not initialized. Run: beehive --init $path"
 
     # Kill existing
     tmux kill-session -t "$SESSION_NAME" 2>/dev/null || true
@@ -391,26 +373,26 @@ do_launch() {
     tmux select-pane -t "$SESSION_NAME:0.3" -T "🐝 Queen"
 
     # Prompts - agents read their skill files
-    local tracker="plans/_meta/TRACKER.md"
+    local bee_prompt="Read CLAUDE.md, .skills/bee.md, then plans/_meta/work.jsonl and plans/_meta/claims/bee-%d.jsonl. You are Bee %d. Follow your skill instructions. Use /report for discoveries, /buzz to check in, /bedtime to save state. Wait for user direction."
 
-    local bee_prompt="Read CLAUDE.md, .skills/bee.md"
-    [[ "$mode" == "workspace" ]] && bee_prompt+=", WORKSPACE.md"
-    bee_prompt+=", then $tracker and .hive/bee-%d.md. You are Bee %d. Follow your skill instructions. Update your status file. Use /report for discoveries, /buzz to check in, /bedtime to save state. Wait for user direction."
+    local queen_prompt="Read CLAUDE.md, .skills/queen.md, then plans/_meta/work.jsonl and plans/_meta/claims/queen.jsonl. You are the Queen. Follow your skill instructions. You work on plans AND coordinate. Use /buzz to consolidate, /session-report at end of session. Wait for user direction."
 
-    local queen_prompt="Read CLAUDE.md, .skills/queen.md"
-    [[ "$mode" == "workspace" ]] && queen_prompt+=", WORKSPACE.md"
-    queen_prompt+=", then $tracker and .hive/queen.md. You are the Queen. Follow your skill instructions. You work on plans AND coordinate. Use /buzz to consolidate, /session-report at end of session. Wait for user direction."
-
-    # Launch
+    # Launch bees with bee_model
     for i in 0 1 2; do
         local prompt
         local bee_num=$((i + 1))
         # shellcheck disable=SC2059
         printf -v prompt "$bee_prompt" "$bee_num" "$bee_num"
-        tmux send-keys -t "$SESSION_NAME:0.$i" "${env_vars}${CLAUDE} ${model_flag} '$prompt'" Enter
+        local pane_cmd
+        pane_cmd=$(build_pane_command "$prompt" "$bee_model")
+        tmux send-keys -t "$SESSION_NAME:0.$i" "$pane_cmd" Enter
         sleep 1
     done
-    tmux send-keys -t "$SESSION_NAME:0.3" "${env_vars}${CLAUDE} ${model_flag} '$queen_prompt'" Enter
+
+    # Launch queen with queen_model
+    local queen_cmd
+    queen_cmd=$(build_pane_command "$queen_prompt" "$queen_model")
+    tmux send-keys -t "$SESSION_NAME:0.3" "$queen_cmd" Enter
     tmux select-pane -t "$SESSION_NAME:0.3"
 
     echo ""
@@ -439,6 +421,51 @@ do_upgrade() {
     # Must already be initialized
     [[ ! -d "$path/plans" ]] && die "Not initialized. Run: beehive --init $path"
 
+    if $DRY_RUN; then
+        echo ""
+        echo -e "${GREEN}Beehive Upgrade (dry run)${NC} — $(basename "$path")"
+        echo ""
+        echo "  Would overwrite:"
+        echo "    .skills/bee.md"
+        echo "    .skills/queen.md"
+        for cmd in report buzz bedtime session-report deep-plan review; do
+            [[ -f "$SCRIPT_DIR/commands/$cmd.md" ]] && echo "    .claude/commands/$cmd.md"
+        done
+        echo "    plans/TEMPLATE.md"
+        echo ""
+        echo "  Would remove (if present):"
+        [[ -f "$path/.claude/commands/sting.md" ]] && echo "    .claude/commands/sting.md"
+        [[ -f "$path/.claude/commands/refresh.md" ]] && echo "    .claude/commands/refresh.md"
+        [[ -f "$path/WORKSPACE.md" ]] && echo "    WORKSPACE.md → plans/_meta/migrated/"
+        echo ""
+        echo "  Would create (if missing):"
+        for f in work.jsonl inbox.jsonl sessions.jsonl archive.jsonl; do
+            [[ ! -f "$path/plans/_meta/$f" ]] && echo "    plans/_meta/$f"
+        done
+        for agent in bee-1 bee-2 bee-3 queen; do
+            [[ ! -f "$path/plans/_meta/claims/$agent.jsonl" ]] && echo "    plans/_meta/claims/$agent.jsonl"
+        done
+        echo ""
+
+        # Check what migration would do
+        _migrate_markdown "$path"
+
+        # Check gitignore changes
+        local gitignore="$path/.gitignore"
+        if [[ -f "$gitignore" ]]; then
+            if ! grep -q "plans/_meta/claims/" "$gitignore" 2>/dev/null; then
+                echo "  Would add to .gitignore: plans/_meta/claims/"
+            fi
+            if grep -q '^\.hive/' "$gitignore" 2>/dev/null; then
+                echo "  Would remove from .gitignore: .hive/"
+            fi
+        fi
+
+        echo ""
+        info "No changes made (dry run)."
+        return
+    fi
+
     info "Upgrading beehive files in: $path"
 
     # Upgrade skills (overwrite)
@@ -448,33 +475,583 @@ do_upgrade() {
 
     # Upgrade commands (overwrite)
     mkdir -p "$path/.claude/commands"
-    for cmd in report buzz bedtime session-report deep-plan; do
-        cp "$SCRIPT_DIR/commands/$cmd.md" "$path/.claude/commands/$cmd.md"
+    for cmd in report buzz bedtime session-report deep-plan review; do
+        [[ -f "$SCRIPT_DIR/commands/$cmd.md" ]] && cp "$SCRIPT_DIR/commands/$cmd.md" "$path/.claude/commands/$cmd.md"
     done
 
     # Clean up removed commands
     rm -f "$path/.claude/commands/sting.md"
     rm -f "$path/.claude/commands/refresh.md"
 
+    # Clean up removed workspace file (v0.4.0 → v0.5.0)
+    if [[ -f "$path/WORKSPACE.md" ]]; then
+        mkdir -p "$path/plans/_meta/migrated"
+        mv "$path/WORKSPACE.md" "$path/plans/_meta/migrated/"
+    fi
+
     # Upgrade plan template (overwrite)
     cp "$SCRIPT_DIR/templates/plan.md" "$path/plans/TEMPLATE.md"
 
-    # Add new files (don't overwrite existing status/data)
-    [[ ! -f "$path/.hive/queen.md" ]] && cp "$SCRIPT_DIR/templates/queen-status.md" "$path/.hive/queen.md"
+    # Create JSONL structure (idempotent)
+    init_jsonl "$path"
+
+    # Migrate from old markdown structure if present
+    _migrate_markdown "$path"
+
+    # Update gitignore
+    init_gitignore "$path"
 
     success "✓ Upgraded to v$VERSION"
     echo "  Skills, commands, and template updated."
-    echo "  Status files, plans, and TRACKER preserved."
+    echo "  JSONL coordination files created."
     echo ""
     echo "  Review changes:"
     echo "    .skills/bee.md, .skills/queen.md"
     echo "    .claude/commands/*"
     echo "    plans/TEMPLATE.md"
+    echo "    plans/_meta/*.jsonl, plans/_meta/claims/"
+}
+
+_migrate_markdown() {
+    local path="$1"
+    local meta="$path/plans/_meta"
+    local migrated="$meta/migrated"
+    local needs_migrate=false
+
+    # Detect old structure
+    [[ -d "$path/.hive" ]] && needs_migrate=true
+    [[ -f "$meta/TRACKER.md" ]] && needs_migrate=true
+    $needs_migrate || return 0
+
+    if $DRY_RUN; then
+        echo "  Would migrate:"
+        [[ -f "$meta/TRACKER.md" ]] && [[ ! -s "$meta/work.jsonl" ]] && {
+            local active_count=0 completed_count=0
+            local section=""
+            while IFS= read -r line; do
+                [[ "$line" == *"## Active"* ]] && { section="active"; continue; }
+                [[ "$line" == *"## Completed"* ]] && { section="completed"; continue; }
+                [[ "$line" == "## "* ]] && { section=""; continue; }
+                [[ "$line" == "|--"* || "$line" == "| Plan "* || "$line" == "###"* || -z "$line" ]] && continue
+                [[ "$line" != \|* ]] && continue
+                [[ "$section" == "active" ]] && active_count=$((active_count + 1))
+                [[ "$section" == "completed" ]] && completed_count=$((completed_count + 1))
+            done < "$meta/TRACKER.md"
+            echo "    TRACKER.md → work.jsonl ($active_count active) + archive.jsonl ($completed_count completed)"
+        }
+        [[ -d "$path/.hive" ]] && {
+            local agent_count=0
+            for f in "$path"/.hive/*.md; do [[ -f "$f" ]] && agent_count=$((agent_count + 1)); done
+            echo "    .hive/ → claims/ ($agent_count agent files)"
+        }
+        [[ -f "$path/plans/INBOX.md" ]] && [[ ! -s "$meta/inbox.jsonl" ]] && echo "    plans/INBOX.md → migrated/"
+        [[ -f "$meta/SESSION_LOG.md" ]] && [[ ! -s "$meta/sessions.jsonl" ]] && echo "    SESSION_LOG.md → migrated/"
+        [[ -f "$meta/DEPENDENCIES.md" ]] && echo "    DEPENDENCIES.md → migrated/"
+        return 0
+    fi
+
+    info "Migrating from markdown to JSONL..."
+    mkdir -p "$migrated"
+
+    # Migration report tracking
+    local report_lines=()
+    _report() { report_lines+=("$1"); }
+
+    # Helper: strip markdown bold (**text** → text) and links ([text](url) → text)
+    _strip_md() { echo "$1" | sed 's/\*\*//g; s/\[\([^]]*\)\]([^)]*)/\1/g'; }
+
+    # Helper: resolve plan name to file path (plans/name.md or plans/name), empty if not found
+    _resolve_plan_file() {
+        local name="$1" base="$2"
+        if [[ -f "$base/plans/$name.md" ]]; then
+            echo "plans/$name.md"
+        elif [[ -f "$base/plans/$name" ]]; then
+            echo "plans/$name"
+        else
+            echo ""
+        fi
+    }
+
+    # Migrate TRACKER.md → work.jsonl + archive.jsonl
+    if [[ -f "$meta/TRACKER.md" ]] && [[ ! -s "$meta/work.jsonl" ]]; then
+        local section=""
+        local migrate_count=0
+        local archive_count=0
+        while IFS= read -r line; do
+            # Track which section we're in
+            [[ "$line" == *"## Active"* ]] && { section="active"; continue; }
+            [[ "$line" == *"## Completed"* ]] && { section="completed"; continue; }
+            # Any other H2 ends the current section
+            [[ "$line" == "## "* ]] && { section=""; continue; }
+            # Skip table headers, separators, sub-headers, blank lines, non-table lines
+            [[ "$line" == "|--"* ]] && continue
+            [[ "$line" == "| Plan "* ]] && continue
+            [[ "$line" == "###"* ]] && continue
+            [[ -z "$line" ]] && continue
+            [[ "$line" != \|* ]] && continue
+
+            if [[ "$section" == "active" ]]; then
+                local plan pts priority status assigned
+                plan=$(_strip_md "$(echo "$line" | awk -F'|' '{gsub(/^[ \t]+|[ \t]+$/, "", $2); print $2}')")
+                pts=$(echo "$line" | awk -F'|' '{gsub(/^[ \t]+|[ \t]+$/, "", $3); print $3}')
+                priority=$(_strip_md "$(echo "$line" | awk -F'|' '{gsub(/^[ \t]+|[ \t]+$/, "", $4); print $4}')")
+                status=$(_strip_md "$(echo "$line" | awk -F'|' '{gsub(/^[ \t]+|[ \t]+$/, "", $5); print $5}')")
+                assigned=$(_strip_md "$(echo "$line" | awk -F'|' '{gsub(/^[ \t]+|[ \t]+$/, "", $6); print $6}')")
+                [[ -z "$plan" ]] && continue
+
+                # Sanitize points: must be integer, default 0
+                if [[ ! "$pts" =~ ^[0-9]+$ ]]; then
+                    _report "- \`$plan\`: points \`$pts\` not numeric, defaulted to 0"
+                    pts="0"
+                fi
+
+                # Normalize status: take first word, ignore trailing descriptions
+                status=$(echo "$status" | awk '{print tolower($1)}' | sed 's/^[ \t]*//;s/[ \t]*$//')
+                case "$status" in
+                    ready|working|blocked|done|archived) ;;
+                    near-complete)                status="working"; _report "- \`$plan\`: status \`near-complete\` → working" ;;
+                    in)                           status="working"; _report "- \`$plan\`: status \`IN PROGRESS\` → working" ;;
+                    pending)                      status="ready"; _report "- \`$plan\`: status \`pending\` → ready" ;;
+                    deferred)                     status="blocked"; _report "- \`$plan\`: status \`deferred\` → blocked" ;;
+                    complete|completed|finished)  status="done" ;;
+                    *)                            _report "- \`$plan\`: status \`$status\` unrecognized, defaulted to ready"; status="ready" ;;
+                esac
+
+                # Normalize priority
+                case "$(echo "$priority" | tr '[:upper:]' '[:lower:]')" in
+                    critical|crit) priority="HIGH" ;;
+                    high|hi)       priority="HIGH" ;;
+                    med|medium)    priority="Medium" ;;
+                    low|lo)        priority="Low" ;;
+                    ref|reference) priority="Low" ;;
+                    *)             priority="Medium" ;;
+                esac
+
+                # Normalize assigned: dash or empty → unassigned
+                [[ "$assigned" == "-" || -z "$assigned" ]] && assigned=""
+
+                local id
+                id="P-$(printf '%03d' $(($(wc -l < "$meta/work.jsonl" 2>/dev/null || echo 0) + 1)))"
+                local today
+                today=$(date +%Y-%m-%d)
+                local file_path
+                file_path=$(_resolve_plan_file "$plan" "$path")
+                [[ -z "$file_path" ]] && _report "- \`$plan\`: no matching plan file found in plans/"
+
+                jq -cn \
+                    --arg id "$id" --arg title "$plan" --arg file "$file_path" \
+                    --arg status "$status" --arg priority "$priority" \
+                    --argjson pts "$pts" --arg assigned "$assigned" \
+                    --arg today "$today" \
+                    '{id:$id,type:"plan",title:$title,file:$file,status:$status,priority:$priority,points:$pts,assigned:$assigned,parent:"",deliverable:"",created:$today,updated:$today}' \
+                    >> "$meta/work.jsonl"
+                migrate_count=$((migrate_count + 1))
+
+            elif [[ "$section" == "completed" ]]; then
+                local plan pts col4 col5
+                plan=$(_strip_md "$(echo "$line" | awk -F'|' '{gsub(/^[ \t]+|[ \t]+$/, "", $2); print $2}')")
+                pts=$(echo "$line" | awk -F'|' '{gsub(/^[ \t]+|[ \t]+$/, "", $3); print $3}')
+                col4=$(echo "$line" | awk -F'|' '{gsub(/^[ \t]+|[ \t]+$/, "", $4); print $4}')
+                col5=$(echo "$line" | awk -F'|' '{gsub(/^[ \t]+|[ \t]+$/, "", $5); print $5}')
+                [[ -z "$plan" ]] && continue
+
+                if [[ ! "$pts" =~ ^[0-9]+$ ]]; then
+                    _report "- \`$plan\` (completed): points \`$pts\` not numeric, defaulted to 0"
+                    pts="0"
+                fi
+
+                # Detect table format: 4-col (Plan|Pts|Completed|Outcome) vs 3-col (Plan|Pts|Outcome)
+                local completed outcome
+                if [[ "$col4" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]]; then
+                    completed="$col4"
+                    outcome="$col5"
+                else
+                    completed=$(date +%Y-%m-%d)
+                    outcome="$col4"
+                fi
+
+                local id
+                id="P-$(printf '%03d' $(( \
+                    $(wc -l < "$meta/work.jsonl" 2>/dev/null || echo 0) + \
+                    $(wc -l < "$meta/archive.jsonl" 2>/dev/null || echo 0) + 1 \
+                )))"
+                local file_path
+                file_path=$(_resolve_plan_file "$plan" "$path")
+                [[ -z "$file_path" ]] && _report "- \`$plan\` (completed): no matching plan file found"
+
+                jq -cn \
+                    --arg id "$id" --arg title "$plan" --arg file "$file_path" \
+                    --argjson pts "$pts" --arg completed "$completed" \
+                    --arg outcome "$outcome" \
+                    '{id:$id,type:"plan",title:$title,file:$file,status:"done",priority:"Medium",points:$pts,assigned:"",parent:"",deliverable:$outcome,created:$completed,updated:$completed}' \
+                    >> "$meta/archive.jsonl"
+                archive_count=$((archive_count + 1))
+            fi
+        done < "$meta/TRACKER.md"
+
+        info "  Migrated $migrate_count active → work.jsonl, $archive_count completed → archive.jsonl"
+        mv "$meta/TRACKER.md" "$migrated/"
+    fi
+
+    # Migrate .hive/bee-N.md → claims/bee-N.jsonl
+    if [[ -d "$path/.hive" ]]; then
+        for status_file in "$path"/.hive/*.md; do
+            [[ ! -f "$status_file" ]] && continue
+            local agent_name
+            agent_name=$(basename "$status_file" .md)
+            local claim_file="$meta/claims/$agent_name.jsonl"
+
+            # Only migrate if claim file is empty
+            if [[ ! -s "$claim_file" ]]; then
+                local hive_status="" hive_plan=""
+                while IFS= read -r line; do
+                    [[ "$line" == "**Status:"* ]] && hive_status=$(echo "$line" | sed 's/\*\*Status:\*\*[[:space:]]*//')
+                    [[ "$line" == "**Plan:"* ]] && hive_plan=$(echo "$line" | sed 's/\*\*Plan:\*\*[[:space:]]*//')
+                done < "$status_file"
+
+                if [[ -n "$hive_plan" && "$hive_plan" != "None" && "$hive_plan" != "-" ]]; then
+                    local action="checkpoint"
+                    local lower_status
+                    lower_status=$(echo "$hive_status" | tr '[:upper:]' '[:lower:]')
+                    case "$lower_status" in
+                        working)  action="claim" ;;
+                        blocked)  action="blocked" ;;
+                        complete) action="complete" ;;
+                        ready)    action="checkpoint" ;;
+                    esac
+                    local ts
+                    ts=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+                    jq -cn --arg action "$action" --arg item "$hive_plan" --arg ts "$ts" \
+                        --arg note "Migrated from .hive/$agent_name.md" \
+                        '{action:$action,item_id:$item,ts:$ts,note:$note}' >> "$claim_file"
+                fi
+            fi
+        done
+        mv "$path/.hive" "$migrated/"
+    fi
+
+    # Migrate INBOX.md → inbox.jsonl
+    if [[ -f "$path/plans/INBOX.md" ]] && [[ ! -s "$meta/inbox.jsonl" ]]; then
+        # Simple migration: just move the file, Queen will process new reports via JSONL
+        mv "$path/plans/INBOX.md" "$migrated/"
+    fi
+
+    # Migrate SESSION_LOG.md → sessions.jsonl
+    if [[ -f "$meta/SESSION_LOG.md" ]] && [[ ! -s "$meta/sessions.jsonl" ]]; then
+        mv "$meta/SESSION_LOG.md" "$migrated/"
+    fi
+
+    # Move DEPENDENCIES.md if present
+    [[ -f "$meta/DEPENDENCIES.md" ]] && mv "$meta/DEPENDENCIES.md" "$migrated/"
+
+    # Write migration report
+    {
+        echo "# Migration Report"
+        echo ""
+        echo "**Date:** $(date +%Y-%m-%d)"
+        echo "**Beehive version:** v$VERSION"
+        echo "**Source:** markdown (TRACKER.md, .hive/, INBOX.md, etc.)"
+        echo "**Target:** JSONL (work.jsonl, claims/, inbox.jsonl, etc.)"
+        echo ""
+        echo "## Summary"
+        echo ""
+        echo "- Active work items migrated to work.jsonl: ${migrate_count:-0}"
+        echo "- Completed items migrated to archive.jsonl: ${archive_count:-0}"
+        echo "- Original files preserved in: \`plans/_meta/migrated/\`"
+        echo ""
+        if [[ ${#report_lines[@]} -gt 0 ]]; then
+            echo "## Fallbacks and Warnings"
+            echo ""
+            for line in "${report_lines[@]}"; do
+                echo "$line"
+            done
+            echo ""
+        fi
+        echo "## Originals"
+        echo ""
+        for f in "$migrated"/*; do
+            [[ -e "$f" ]] && echo "- \`$(basename "$f")\`"
+        done
+    } > "$migrated/migration-report.md"
+
+    success "  Migrated old files to plans/_meta/migrated/"
+    info "  Migration report: plans/_meta/migrated/migration-report.md"
 }
 
 #######################################
-# Usage
+# Status display (JSONL only)
 #######################################
+do_status() {
+    local path="$1"
+    local meta="$path/plans/_meta"
+
+    [[ ! -d "$path/plans" ]] && die "Not initialized. Run: beehive --init $path"
+    [[ ! -f "$meta/work.jsonl" ]] && die "No JSONL files. Run: beehive --upgrade $path"
+
+    if $JSON_OUTPUT; then
+        _do_status_json "$path"
+    else
+        _do_status_human "$path"
+    fi
+}
+
+_do_status_json() {
+    local path="$1"
+    local meta="$path/plans/_meta"
+    local has_errors=false
+
+    # Collect work items (skip malformed)
+    local work_items="[]"
+    if [[ -s "$meta/work.jsonl" ]]; then
+        work_items=$(jq -R -s '[split("\n") | .[] | select(length > 0) | fromjson? // empty]' "$meta/work.jsonl" 2>/dev/null || echo "[]")
+        # Check for malformed lines
+        local total_lines valid_count
+        total_lines=$(wc -l < "$meta/work.jsonl" | tr -d ' ')
+        valid_count=$(echo "$work_items" | jq 'length')
+        [[ "$total_lines" -ne "$valid_count" ]] && has_errors=true
+    fi
+
+    # Collect agent states (latest entry per agent)
+    local agents="[]"
+    local agent_entries=()
+    for claim_file in "$meta"/claims/*.jsonl; do
+        [[ ! -f "$claim_file" ]] && continue
+        local agent
+        agent=$(basename "$claim_file" .jsonl)
+        if [[ ! -s "$claim_file" ]]; then
+            agent_entries+=("$(jq -cn --arg a "$agent" '{agent:$a,status:"idle"}')")
+            continue
+        fi
+        local last
+        last=$(tail -1 "$claim_file")
+        if echo "$last" | jq empty 2>/dev/null; then
+            agent_entries+=("$(echo "$last" | jq -c --arg a "$agent" '{agent:$a} + .')")
+        else
+            agent_entries+=("$(jq -cn --arg a "$agent" '{agent:$a,status:"malformed"}')")
+            has_errors=true
+        fi
+    done
+    if [[ ${#agent_entries[@]} -gt 0 ]]; then
+        agents=$(printf '%s\n' "${agent_entries[@]}" | jq -s '.')
+    fi
+
+    # Collect inbox
+    local inbox="[]"
+    if [[ -s "$meta/inbox.jsonl" ]]; then
+        inbox=$(jq -R -s '[split("\n") | .[] | select(length > 0) | fromjson? // empty | select(.status == "pending")]' "$meta/inbox.jsonl" 2>/dev/null || echo "[]")
+    fi
+
+    # Output combined JSON
+    jq -cn \
+        --arg project "$(basename "$path")" \
+        --argjson work "$work_items" \
+        --argjson agents "$agents" \
+        --argjson inbox "$inbox" \
+        --argjson errors "$has_errors" \
+        '{project:$project,work_items:$work,agents:$agents,inbox:$inbox,has_errors:$errors}'
+
+    $has_errors && return 1
+    return 0
+}
+
+_do_status_human() {
+    local path="$1"
+    local meta="$path/plans/_meta"
+
+    echo ""
+    echo -e "${GREEN}Beehive Status${NC} — $(basename "$path")"
+
+    # Work items
+    echo ""
+    echo -e "${CYAN}  Work Items${NC}"
+    if [[ -s "$meta/work.jsonl" ]]; then
+        local line_num=0
+        while IFS= read -r line; do
+            line_num=$((line_num + 1))
+            if ! echo "$line" | jq empty 2>/dev/null; then
+                echo -e "  ${RED}⚠ work.jsonl:$line_num malformed${NC}"
+                continue
+            fi
+            local icon
+            case $(echo "$line" | jq -r '.status') in
+                ready) icon="○" ;; working) icon="●" ;; blocked) icon="✕" ;; *) icon="·" ;;
+            esac
+            echo "$line" | jq -r --arg i "$icon" '"\("  " + $i + " " + .id + " " + .status + " " + .priority + " " + .title + (if .assigned != "" then " [" + .assigned + "]" else "" end))"'
+        done < "$meta/work.jsonl"
+    else
+        echo "  (none)"
+    fi
+
+    # Agent states
+    echo ""
+    echo -e "${CYAN}  Agents${NC}"
+    for claim_file in "$meta"/claims/*.jsonl; do
+        [[ ! -f "$claim_file" ]] && continue
+        local agent
+        agent=$(basename "$claim_file" .jsonl)
+        if [[ ! -s "$claim_file" ]]; then
+            printf "  %-10s (idle)\n" "$agent"
+            continue
+        fi
+        local last
+        last=$(tail -1 "$claim_file")
+        if ! echo "$last" | jq empty 2>/dev/null; then
+            printf "  %-10s ${RED}⚠ malformed${NC}\n" "$agent"
+            continue
+        fi
+        echo "$last" | jq -r --arg a "$agent" '"\("  " + $a + " " + .action + " " + .item_id + " " + .ts)"'
+    done
+
+    # Inbox
+    if [[ -s "$meta/inbox.jsonl" ]]; then
+        local pending
+        pending=$(jq -s '[.[] | select(.status == "pending")] | length' "$meta/inbox.jsonl" 2>/dev/null || echo 0)
+        if [[ "$pending" -gt 0 ]]; then
+            echo ""
+            echo -e "${CYAN}  Inbox${NC} ($pending pending)"
+            jq -r 'select(.status == "pending") | "  • [\(.urgency)] \(.issue) — \(.from)"' "$meta/inbox.jsonl" 2>/dev/null
+        fi
+    fi
+
+    echo ""
+}
+
+#######################################
+# Validate JSONL state files
+#######################################
+do_validate() {
+    local path="$1"
+    local meta="$path/plans/_meta"
+    local errors=0
+    local checked=0
+
+    [[ ! -d "$path/plans" ]] && die "Not initialized. Run: beehive --init $path"
+    [[ ! -f "$meta/work.jsonl" ]] && die "No JSONL files. Run: beehive --upgrade $path"
+
+    echo ""
+    echo -e "${GREEN}Beehive Validate${NC} — $(basename "$path")"
+    echo ""
+
+    # Validate a JSONL file with required fields
+    _validate_jsonl() {
+        local file="$1" label="$2"
+        shift 2
+        local required_fields=("$@")
+        local line_num=0
+        local file_errors=0
+
+        if [[ ! -f "$file" ]]; then
+            echo -e "  ${YELLOW}⚠ $label: file missing${NC}"
+            return 0
+        fi
+
+        if [[ ! -s "$file" ]]; then
+            echo -e "  ${GREEN}✓${NC} $label: empty (OK)"
+            checked=$((checked + 1))
+            return 0
+        fi
+
+        while IFS= read -r line; do
+            line_num=$((line_num + 1))
+            [[ -z "$line" ]] && continue
+
+            if ! echo "$line" | jq empty 2>/dev/null; then
+                echo -e "  ${RED}✕${NC} $label:$line_num — invalid JSON"
+                file_errors=$((file_errors + 1))
+                continue
+            fi
+
+            for field in "${required_fields[@]}"; do
+                local val
+                val=$(echo "$line" | jq -r --arg f "$field" '.[$f] // empty')
+                if [[ -z "$val" ]]; then
+                    echo -e "  ${RED}✕${NC} $label:$line_num — missing field: $field"
+                    file_errors=$((file_errors + 1))
+                fi
+            done
+
+        done < "$file"
+
+        checked=$((checked + 1))
+        if [[ $file_errors -eq 0 ]]; then
+            echo -e "  ${GREEN}✓${NC} $label: $line_num lines OK"
+        else
+            echo -e "  ${RED}✕${NC} $label: $file_errors errors in $line_num lines"
+            errors=$((errors + file_errors))
+        fi
+    }
+
+    # Validate work.jsonl — required: id, type, title, status
+    _validate_jsonl "$meta/work.jsonl" "work.jsonl" "id" "type" "title" "status"
+
+    # Validate archive.jsonl — required: id, type, title, status
+    _validate_jsonl "$meta/archive.jsonl" "archive.jsonl" "id" "type" "title" "status"
+
+    # Validate inbox.jsonl — required: from, issue, status
+    _validate_jsonl "$meta/inbox.jsonl" "inbox.jsonl" "from" "issue" "status"
+
+    # Validate sessions.jsonl — required: ts
+    _validate_jsonl "$meta/sessions.jsonl" "sessions.jsonl" "ts"
+
+    # Validate claims files — required: action, item_id, ts
+    for claim_file in "$meta"/claims/*.jsonl; do
+        [[ ! -f "$claim_file" ]] && continue
+        local label="claims/$(basename "$claim_file")"
+        _validate_jsonl "$claim_file" "$label" "action" "item_id" "ts"
+    done
+
+    # Validate work.jsonl status values (skip malformed lines — already reported above)
+    if [[ -s "$meta/work.jsonl" ]]; then
+        local bad_statuses
+        bad_statuses=$(jq -R -r 'fromjson? | .status // empty' "$meta/work.jsonl" 2>/dev/null | grep -cvE '^(ready|working|blocked|done|archived)$' || true)
+        if [[ "$bad_statuses" -gt 0 ]]; then
+            echo -e "  ${RED}✕${NC} work.jsonl: $bad_statuses entries with invalid status (expected: ready/working/blocked/done/archived)"
+            errors=$((errors + bad_statuses))
+        fi
+    fi
+
+    # Validate claims action values (skip malformed lines)
+    for claim_file in "$meta"/claims/*.jsonl; do
+        [[ ! -f "$claim_file" || ! -s "$claim_file" ]] && continue
+        local label="claims/$(basename "$claim_file")"
+        local bad_actions
+        bad_actions=$(jq -R -r 'fromjson? | .action // empty' "$claim_file" 2>/dev/null | grep -cvE '^(claim|progress|blocked|complete|checkpoint)$' || true)
+        if [[ "$bad_actions" -gt 0 ]]; then
+            echo -e "  ${RED}✕${NC} $label: $bad_actions entries with invalid action (expected: claim/progress/blocked/complete/checkpoint)"
+            errors=$((errors + bad_actions))
+        fi
+    done
+
+    # Cross-reference: work items with status=working should have a matching claim
+    if [[ -s "$meta/work.jsonl" ]]; then
+        local working_items
+        working_items=$(jq -R -r 'fromjson? | select(.status == "working") | .id' "$meta/work.jsonl" 2>/dev/null)
+        if [[ -n "$working_items" ]]; then
+            while IFS= read -r item_id; do
+                local has_claim=false
+                for claim_file in "$meta"/claims/*.jsonl; do
+                    [[ ! -f "$claim_file" || ! -s "$claim_file" ]] && continue
+                    if jq -e --arg id "$item_id" 'select(.item_id == $id and .action == "claim")' "$claim_file" >/dev/null 2>&1; then
+                        has_claim=true
+                        break
+                    fi
+                done
+                if ! $has_claim; then
+                    echo -e "  ${YELLOW}⚠${NC} work.jsonl: $item_id has status=working but no agent has claimed it"
+                fi
+            done <<< "$working_items"
+        fi
+    fi
+
+    echo ""
+    if [[ $errors -eq 0 ]]; then
+        success "✓ Validation passed ($checked files checked, 0 errors)"
+        return 0
+    else
+        echo -e "${RED}✕ Validation failed ($checked files checked, $errors errors)${NC}"
+        return 1
+    fi
+}
 usage() {
     cat << EOF
 Usage: beehive [options] [path]
@@ -482,27 +1059,37 @@ Usage: beehive [options] [path]
 Orchestrate multiple Claude Code agents in tmux.
 
 Commands:
-    beehive [path]           Launch agents (default: current directory)
-    beehive --init [path]    Initialize repo/workspace structure
-    beehive --upgrade [path] Upgrade skills, commands, and template (preserves data)
+    beehive [path]              Launch agents (default: current directory)
+    beehive --init [path]       Initialize repo/workspace structure
+    beehive --upgrade [path]    Upgrade skills, commands, and template (preserves data)
+    beehive --status [path]     Show work items, agent states, and inbox
+    beehive --validate [path]   Validate JSONL state files for schema correctness
 
 Options:
-    --session NAME    Session name (default: folder name)
-    --model MODEL     Anthropic model override
-    --profile PROF    AWS profile for Bedrock
-    --region REGION   AWS region for Bedrock
-    --base-url URL    Anthropic API base URL (for API proxies)
-    --api-key KEY     Anthropic API key
-    --yes             Skip confirmation
-    --version         Show version
-    --help            Show this help
+    --session NAME       Session name (default: folder name)
+    --model MODEL        Anthropic model override (all agents)
+    --bee-model MODEL    Model override for all Bees
+    --queen-model MODEL  Model override for Queen
+    --profile PROF       AWS profile for Bedrock
+    --region REGION      AWS region for Bedrock
+    --base-url URL       Anthropic API base URL (for API proxies)
+    --api-key KEY        Anthropic API key
+    --dry-run            Preview upgrade changes without modifying files
+    --json               Machine-readable JSON output for --status
+    --yes                Skip confirmation
+    --version            Show version
+    --help               Show this help
 
 Examples:
     beehive                      # Run in current directory
     beehive ~/myproject          # Run in specific path
     beehive --init ~/projects    # Initialize (auto-detects workspace vs repo)
     beehive --upgrade            # Upgrade skills/commands/template to latest
+    beehive --upgrade --dry-run  # Preview what upgrade would change
+    beehive --status --json      # Machine-readable status for CI/scripts
+    beehive --validate           # Check JSONL files for errors
     beehive --base-url http://localhost:8090 --api-key sk-ant-xxx --yes
+    beehive --queen-model claude-opus-4-6 --bee-model claude-sonnet-4-6
 
 EOF
     exit 0
@@ -515,24 +1102,41 @@ main() {
     local cmd=""
     local path=""
     local skip_confirm=false
+    DRY_RUN=false
+    JSON_OUTPUT=false
+
+    # CLI overrides (resolved later via resolve_setting)
+    local CLI_SESSION_NAME="" CLI_MODEL=""
+    local CLI_MODEL_BEE="" CLI_MODEL_QUEEN=""
+    local CLI_AWS_PROFILE="" CLI_AWS_REGION=""
+    local CLI_ANTHROPIC_BASE_URL="" CLI_ANTHROPIC_API_KEY=""
 
     while [[ $# -gt 0 ]]; do
         case "$1" in
-            --init)      cmd="init"; shift ;;
-            --upgrade)   cmd="upgrade"; shift ;;
-            --session)   SESSION_NAME="$2"; shift 2 ;;
-            --model)     ANTHROPIC_MODEL="$2"; shift 2 ;;
-            --profile)   AWS_PROFILE="$2"; shift 2 ;;
-            --region)    AWS_REGION="$2"; shift 2 ;;
-            --base-url)  ANTHROPIC_BASE_URL="$2"; shift 2 ;;
-            --api-key)   ANTHROPIC_API_KEY="$2"; shift 2 ;;
-            --yes|-y)    skip_confirm=true; shift ;;
-            --version)   echo "beehive v$VERSION"; exit 0 ;;
-            --help|-h)   usage ;;
-            -*)          die "Unknown option: $1" ;;
-            *)           path="$1"; shift ;;
+            --init)         cmd="init"; shift ;;
+            --upgrade)      cmd="upgrade"; shift ;;
+            --status)       cmd="status"; shift ;;
+            --validate)     cmd="validate"; shift ;;
+            --dry-run)      DRY_RUN=true; shift ;;
+            --json)         JSON_OUTPUT=true; shift ;;
+            --session)      CLI_SESSION_NAME="$2"; shift 2 ;;
+            --model)        CLI_MODEL="$2"; shift 2 ;;
+            --bee-model)    CLI_MODEL_BEE="$2"; shift 2 ;;
+            --queen-model)  CLI_MODEL_QUEEN="$2"; shift 2 ;;
+            --profile)      CLI_AWS_PROFILE="$2"; shift 2 ;;
+            --region)       CLI_AWS_REGION="$2"; shift 2 ;;
+            --base-url)     CLI_ANTHROPIC_BASE_URL="$2"; shift 2 ;;
+            --api-key)      CLI_ANTHROPIC_API_KEY="$2"; shift 2 ;;
+            --yes|-y)       skip_confirm=true; shift ;;
+            --version)      echo "beehive v$VERSION"; exit 0 ;;
+            --help|-h)      usage ;;
+            -*)             die "Unknown option: $1" ;;
+            *)              path="$1"; shift ;;
         esac
     done
+
+    # Require jq for all commands (--help/--version exit above before reaching here)
+    require_jq
 
     path="${path:-$(pwd)}"
     [[ ! -d "$path" ]] && die "Directory not found: $path"
@@ -540,6 +1144,8 @@ main() {
     case "$cmd" in
         init) do_init "$path" ;;
         upgrade) do_upgrade "$path" ;;
+        status) do_status "$path" ;;
+        validate) do_validate "$path" ;;
         *)
             echo ""
             echo -e "${GREEN}Beehive${NC} v$VERSION"
@@ -551,13 +1157,29 @@ main() {
             # Load config early to show settings
             load_config "$path" || true
 
+            # Resolve all settings: CLI → config (with role-specific precedence)
+            SESSION_NAME=$(resolve_setting "$CLI_SESSION_NAME" "" "$CONF_SESSION" "$(basename "$path")")
+            AWS_PROFILE=$(resolve_setting "$CLI_AWS_PROFILE" "" "$CONF_AWS_PROFILE" "")
+            AWS_REGION=$(resolve_setting "$CLI_AWS_REGION" "" "$CONF_AWS_REGION" "")
+            ANTHROPIC_BASE_URL=$(resolve_setting "$CLI_ANTHROPIC_BASE_URL" "" "$CONF_ANTHROPIC_BASE_URL" "")
+            ANTHROPIC_API_KEY=$(resolve_setting "$CLI_ANTHROPIC_API_KEY" "" "$CONF_ANTHROPIC_API_KEY" "")
+
+            local bee_model queen_model
+            bee_model=$(resolve_setting "$CLI_MODEL_BEE" "$CLI_MODEL" "$CONF_MODEL_BEE" "$CONF_MODEL")
+            queen_model=$(resolve_setting "$CLI_MODEL_QUEEN" "$CLI_MODEL" "$CONF_MODEL_QUEEN" "$CONF_MODEL")
+
             if [[ "$mode" == "workspace" ]]; then
                 info "Mode: Workspace"
             else
                 info "Mode: Single repo"
             fi
             info "Path: $path"
-            [[ -n "$ANTHROPIC_MODEL" ]] && info "Model: $ANTHROPIC_MODEL"
+            if [[ "$bee_model" != "$queen_model" ]] && [[ -n "$bee_model" || -n "$queen_model" ]]; then
+                [[ -n "$bee_model" ]] && info "Bee model: $bee_model"
+                [[ -n "$queen_model" ]] && info "Queen model: $queen_model"
+            elif [[ -n "$bee_model" ]]; then
+                info "Model: $bee_model"
+            fi
             if [[ -n "$ANTHROPIC_BASE_URL" ]]; then
                 info "Backend: API proxy ($ANTHROPIC_BASE_URL)"
             elif [[ -n "$AWS_PROFILE" ]]; then
@@ -571,7 +1193,7 @@ main() {
                 [[ $REPLY =~ ^[Nn]$ ]] && { echo "Aborted."; exit 0; }
             fi
 
-            do_launch "$path"
+            do_launch "$path" "$bee_model" "$queen_model"
             ;;
     esac
 }

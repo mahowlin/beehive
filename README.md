@@ -21,6 +21,7 @@ Inspired by [Gas Town](https://steve-yegge.medium.com/welcome-to-gas-town-4f25ee
 | Dependency | macOS | Linux (Debian/Ubuntu) |
 |------------|-------|----------------------|
 | tmux | `brew install tmux` | `sudo apt install tmux` |
+| jq | `brew install jq` | `sudo apt install jq` |
 | Claude Code | [Install guide](https://docs.anthropic.com/en/docs/claude-code) | [Install guide](https://docs.anthropic.com/en/docs/claude-code) |
 | Clipboard | `pbcopy` (built-in) | `sudo apt install xclip` or `xsel` |
 
@@ -62,7 +63,7 @@ beehive
 beehive --upgrade
 ```
 
-This overwrites skills, commands, and the plan template with the latest versions. Your plans, status files, TRACKER, and CLAUDE.md are preserved.
+This overwrites skills, commands, and the plan template with the latest versions. If your project uses the old markdown coordination files (.hive/, TRACKER.md, etc.), `--upgrade` migrates them to JSONL automatically, preserving old files in `plans/_meta/migrated/`.
 
 **Install note:** Symlink goes to `/usr/local/bin` (works on macOS and Linux). Use `sudo` if needed. On Apple Silicon, `/opt/homebrew/bin` also works.
 
@@ -74,103 +75,94 @@ myproject/
 ├── .skills/
 │   ├── bee.md                   # Bee behavior rules
 │   └── queen.md                 # Queen behavior rules
-├── .hive/                       # Agent status files (gitignored)
-│   ├── bee-1.md
-│   ├── bee-2.md
-│   ├── bee-3.md
-│   └── queen.md
 ├── .claude/commands/            # Slash commands
 │   ├── buzz.md
 │   ├── report.md
 │   ├── bedtime.md
 │   ├── session-report.md
-│   └── deep-plan.md
+│   ├── deep-plan.md
+│   └── review.md
 └── plans/
-    ├── INBOX.md                 # Plan requests from agents
     ├── TEMPLATE.md              # Template for new plans
     ├── completed/               # Archived plans
     └── _meta/
-        ├── TRACKER.md           # Plan status (Queen owns)
-        ├── SESSION_LOG.md       # Session notes (trimmed regularly)
-        └── DEPENDENCIES.md      # Dependency graph (Mermaid)
+        ├── work.jsonl           # Work items — plans and tasks (Queen owns)
+        ├── inbox.jsonl          # Out-of-scope reports (Bees append, Queen processes)
+        ├── sessions.jsonl       # Session reports (Queen owns)
+        ├── archive.jsonl        # Completed/archived work items
+        └── claims/              # Agent state (gitignored)
+            ├── bee-1.jsonl
+            ├── bee-2.jsonl
+            ├── bee-3.jsonl
+            └── queen.jsonl
 ```
 
-**Workspace mode** (multiple git repos in one directory) also creates `WORKSPACE.md` and a workspace tracker at `plans/_meta/TRACKER.md`.
+**Workspace mode** (multiple git repos in one directory) creates a CLAUDE.md with a repository inventory table. Git worktrees are fully supported.
 
 ## How It Works
 
 ```
                               ┌─────────────┐
-                              │  Beekeeper  │◄─────────────────────────────┐
-                              │    (you)    │                              │
-                              └──────┬──────┘                              │
-                                     │ directs                             │
-            ┌────────────────────────┼────────────────────────┐            │
-            │                        │                        │            │
-            ▼                        ▼                        ▼            │
-      ┌───────────┐            ┌───────────┐            ┌───────────┐      │
-      │   Bee 1   │            │   Bee 2   │            │   Bee 3   │      │
-      └─────┬─────┘            └─────┬─────┘            └─────┬─────┘      │
-            │                        │                        │            │
-            │ writes                 │ writes                 │ writes     │
-            ▼                        ▼                        ▼            │
-      ┌───────────┐            ┌───────────┐            ┌───────────┐      │
-      │  .hive/   │            │  .hive/   │            │  .hive/   │      │
-      │ bee-1.md  │            │ bee-2.md  │            │ bee-3.md  │      │
-      └─────┬─────┘            └─────┬─────┘            └─────┬─────┘      │
-            │                        │                        │            │
-            └────────────────────────┼────────────────────────┘            │
-                                     │                                     │
-                                     │ Queen reads (.hive/bee-*.md)        │
-                                     ▼                                     │
-                              ┌─────────────┐                              │
-                              │    Queen    │──────────────────────────────┘
+                              │  Beekeeper  │◄──────────────────────┐
+                              │    (you)    │                       │
+                              └──────┬──────┘                       │
+                                     │ directs                      │
+            ┌────────────────────────┼────────────────────────┐     │
+            ▼                        ▼                        ▼     │
+      ┌───────────┐            ┌───────────┐            ┌───────────┐
+      │   Bee 1   │            │   Bee 2   │            │   Bee 3   │
+      └─────┬─────┘            └─────┬─────┘            └─────┬─────┘
+            │ writes                 │ writes                 │ writes
+            ▼                        ▼                        ▼
+      ┌───────────┐            ┌───────────┐            ┌───────────┐
+      │  claims/  │            │  claims/  │            │  claims/  │
+      │bee-1.jsonl│            │bee-2.jsonl│            │bee-3.jsonl│
+      └─────┬─────┘            └─────┬─────┘            └─────┬─────┘
+            └────────────────────────┼────────────────────────┘
+                                     │ Queen reads claims/*.jsonl
+                                     ▼
+                              ┌─────────────┐
+                              │    Queen    │───────────────────────┘
                               └──────┬──────┘
-                                     │
                ┌─────────────────────┼─────────────────────┐
                │ writes              │ reads               │ writes
                ▼                     ▼                     ▼
         ┌─────────────┐       ┌─────────────┐       ┌─────────────┐
-        │ TRACKER.md  │       │  INBOX.md   │       │   plans/    │
-        │  (status)   │       │(discoveries)│       │(task files) │
+        │ work.jsonl  │       │ inbox.jsonl │       │   plans/    │
+        │  (items)    │       │  (reports)  │       │(plan files) │
         └─────────────┘       └──────┬──────┘       └──────┬──────┘
                                      ▲                     │
-                                     │                     │
                       Bees /report ──┘                     │ Bees read
-                                                           │
-            ┌──────────────────────────────────────────────┘
-            │
-            ▼
+                                                           ▼
       ┌───────────┐            ┌───────────┐            ┌───────────┐
       │   Bee 1   │            │   Bee 2   │            │   Bee 3   │
       └───────────┘            └───────────┘            └───────────┘
 ```
 
 **Roles:**
-- **Queen** — Works on plans, coordinates hive, tracks progress in `plans/_meta/TRACKER.md`, verifies completion
-- **Bees** — Execute plans, update status in `.hive/bee-N.md`, report discoveries
+- **Queen** — Works on plans, coordinates hive, owns `work.jsonl`, verifies completion
+- **Bees** — Execute plans/tasks, write to own `claims/bee-N.jsonl`, report discoveries
 - **Beekeeper (you)** — Direct agents, copy messages between panes, approve major steps
+
+**Work items** are either **plans** (markdown file + work.jsonl entry) or **tasks** (inline in work.jsonl with `done_when` and `context` fields). Tasks are for lightweight work; plans are for complex multi-step work.
 
 **Workflow:**
 1. Tell Queen what to build
-2. Queen creates plans in `plans/`, updates `plans/_meta/TRACKER.md`
-3. Direct each Bee to claim a plan (Queen can also claim plans)
-4. Agents execute, update status, run `/buzz` when done
-5. Queen verifies and archives completed plans
-
-**Creating plans:** Queen uses `plans/TEMPLATE.md` and `/deep-plan` for complex work. See `templates/example-plan.md` for a complete example with Objective, Why This Approach, Technical Context, Implementation Strategy, Tasks, and Done Criteria.
+2. Queen creates plans/tasks in `work.jsonl` (and plan files in `plans/`)
+3. Direct each Bee to claim work (Queen can also claim)
+4. Agents execute, update their claim files, run `/buzz` when done
+5. Queen verifies and archives completed work
 
 ## Commands
-
-Slash commands keep agents on track:
 
 | Command | Who | Purpose |
 |---------|-----|---------|
 | `/buzz` | Any | Check in: plan hygiene, self-check, completion. Queen also coordinates hive. |
-| `/report` | Any | Submit out-of-scope discoveries to INBOX |
-| `/bedtime` | Any | Save status and plan state before break or session end |
-| `/session-report` | Queen | Write end-of-session report to SESSION_LOG.md |
+| `/report` | Any | Submit out-of-scope discoveries to inbox.jsonl |
+| `/bedtime` | Any | Save state to claims file before break or session end |
+| `/session-report` | Queen | Write end-of-session report to sessions.jsonl |
 | `/deep-plan` | Queen | Structured exploration before plan creation |
+| `/review` | Queen | Strategic project assessment (every few hours) |
 
 ## Configuration
 
@@ -195,6 +187,15 @@ CONF_SESSION=my-session          # Custom tmux session name
 CONF_CLAUDE_CMD=/path/to/claude  # Custom claude path
 ```
 
+**Per-role model overrides:**
+```bash
+CONF_MODEL=claude-opus-4-6           # Fallback for all agents
+CONF_MODEL_BEE=claude-sonnet-4-6     # Override for all Bees
+CONF_MODEL_QUEEN=claude-opus-4-6     # Override for Queen
+```
+
+Precedence: role CLI (`--bee-model`) → global CLI (`--model`) → role config (`CONF_MODEL_BEE`) → global config (`CONF_MODEL`)
+
 **Tmux controls:**
 
 | Key | Action |
@@ -210,20 +211,26 @@ CONF_CLAUDE_CMD=/path/to/claude  # Custom claude path
 Usage: beehive [options] [path]
 
 Commands:
-    beehive [path]           Launch agents (default: current directory)
-    beehive --init [path]    Initialize repo/workspace structure
-    beehive --upgrade [path] Upgrade skills, commands, and template (preserves data)
+    beehive [path]              Launch agents (default: current directory)
+    beehive --init [path]       Initialize repo/workspace structure
+    beehive --upgrade [path]    Upgrade skills, commands, and template (preserves data)
+    beehive --status [path]     Show work items, agent states, and inbox
+    beehive --validate [path]   Validate JSONL state files for schema correctness
 
 Options:
-    --session NAME    Session name (default: folder name)
-    --model MODEL     Anthropic model override
-    --profile PROF    AWS profile for Bedrock
-    --region REGION   AWS region for Bedrock
-    --base-url URL    Anthropic API base URL (for API proxies)
-    --api-key KEY     Anthropic API key
-    --yes             Skip confirmation
-    --version         Show version
-    --help            Show this help
+    --session NAME       Session name (default: folder name)
+    --model MODEL        Anthropic model override
+    --bee-model MODEL    Model override for all Bees
+    --queen-model MODEL  Model override for Queen
+    --profile PROF       AWS profile for Bedrock
+    --region REGION      AWS region for Bedrock
+    --base-url URL       Anthropic API base URL (for API proxies)
+    --api-key KEY        Anthropic API key
+    --dry-run            Preview upgrade changes without modifying files
+    --json               Machine-readable JSON output for --status
+    --yes                Skip confirmation
+    --version            Show version
+    --help               Show this help
 ```
 
 ## Troubleshooting
@@ -232,6 +239,10 @@ Options:
 - Press `Ctrl+b`, then `d` to detach (beehive keeps running in background)
 - Run `tmux attach` to get back in
 - Run `tmux kill-server` to kill everything and start fresh
+
+**"jq required"**
+- macOS: `brew install jq`
+- Linux: `sudo apt install jq`
 
 **"Claude CLI not found"**
 - Ensure `claude` is installed and in your PATH

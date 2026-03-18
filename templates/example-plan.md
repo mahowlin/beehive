@@ -4,7 +4,7 @@
 > - Edit ONLY: Task checkboxes, Completion Summary, Session State, and sections during /buzz or /bedtime
 > - Out-of-scope work → /report
 > - Before finishing → /buzz
-> - If you accidentally edited TRACKER.md → revert and tell Queen
+> - If you accidentally edited work.jsonl → revert and tell Queen
 
 **Priority:** HIGH
 **Points:** 2

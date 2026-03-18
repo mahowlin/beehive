@@ -1,7 +1,5 @@
-# Beehive coordination files to exclude from git
-
-# Bee status files (session-specific, not shared)
-.hive/
+# Beehive agent state (session-specific, not shared)
+plans/_meta/claims/
 
 # Claude Code
 .claude/

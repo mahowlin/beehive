@@ -1,53 +1,27 @@
 # /session-report - Queen End-of-Session Report
 
-Queen command. Write a dated section to `plans/_meta/SESSION_LOG.md`.
+Queen command. Append a session entry to `plans/_meta/sessions.jsonl`.
 
 Perform these steps:
 
-1. **Gather state** — Read `.hive/bee-*.md`, `.hive/queen.md`, `plans/_meta/TRACKER.md`, `plans/INBOX.md`
+1. **Gather state** — Read `plans/_meta/claims/*.jsonl`, `plans/_meta/work.jsonl`, `plans/_meta/inbox.jsonl`
 
-2. **Write a new dated section** at the top of `plans/_meta/SESSION_LOG.md` (below the `# Session Log` heading):
+2. **Append a session entry** to `plans/_meta/sessions.jsonl`:
 
-```markdown
-## YYYY-MM-DD (Queen Session)
-
-### Summary
-[1-2 sentences: what happened this session]
-
-### Hive Status
-| Bee | Plan | Status | Last Updated | Notes |
-|-----|------|--------|-------------|-------|
-| Bee 1 | [plan or -] | [status] | [timestamp] | [notes] |
-| Bee 2 | [plan or -] | [status] | [timestamp] | [notes] |
-| Bee 3 | [plan or -] | [status] | [timestamp] | [notes] |
-| Queen | [plan or -] | [status] | [timestamp] | [notes] |
-
-### TRACKER Changes
-- [Plans added, status changes, completions]
-
-### Key Discoveries
-- [Notable findings from Bees or Queen]
-
-### INBOX Processed
-- [Approved/rejected/deferred items and reasons]
-
-### Blockers
-- [Current blockers across the hive]
-
-### Ready Plans
-- [Plans available for assignment next session]
-
-### User Actions Required
-- [Decisions needed, approvals pending]
-
-### Resume Prompt
-[Instructions for cold-starting the next session: what to read, what's in progress, what to do first]
+```json
+{"date":"2026-01-20","summary":"Completed auth plan, started API refactor","agents":{"bee-1":{"item":"P-001","status":"complete"},"bee-2":{"item":"T-005","status":"working"},"bee-3":{"item":"","status":"idle"},"queen":{"item":"P-002","status":"working"}},"changes":["P-001 done","P-002 started","T-005 assigned to bee-2"],"blockers":[],"ready_items":["T-006","T-007"],"resume":"Queen working on P-002 task 2. Bee-2 on T-005. Assign T-006/T-007 to free agents.","ts":"2026-01-20T18:00:00Z"}
 ```
 
-3. **Trim old entries** — Keep only the last 7 days of session logs
+**Fields:**
+- `date` — session date
+- `summary` — 1-2 sentences of what happened
+- `agents` — object with each agent's current item and status
+- `changes` — array of notable changes this session
+- `blockers` — array of current blockers (empty if none)
+- `ready_items` — array of unassigned work item ids
+- `resume` — cold-start instructions for next session
+- `ts` — ISO 8601 timestamp
 
-4. **Update your status file** (`.hive/queen.md`)
-   - Update Last /session-report timestamp
-   - Add session notes
+3. **Append a `checkpoint` entry** to your `claims/queen.jsonl` with session notes
 
-5. **Confirm** — Tell the user the session report has been written
+4. **Confirm** — Tell the user the session report has been written

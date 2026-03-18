@@ -1,4 +1,4 @@
-# /bedtime - Save Status Before Break
+# /bedtime - Save State Before Break
 
 Save your current state. Use anytime:
 - Mid-task (preserve progress before connection drops)
@@ -14,14 +14,12 @@ Perform these steps:
    - Update **Session State**: current task, next step, context notes, timestamp
    - Prune stale data from Technical Context / Notes
 
-   **Permitted plan edits:** Task checkboxes, Session State, Completion Summary.
+2. **Append a `checkpoint` entry** to your `claims/{role}.jsonl`:
+   ```json
+   {"action":"checkpoint","item_id":"P-001","ts":"2026-01-21T14:30:00Z","note":"Tasks 1-3 done. On task 4: JWT validation. Next: token refresh in auth.ts:45"}
+   ```
 
-2. **Update your status file** (`.hive/bee-N.md` or `.hive/queen.md`)
-   - Set Status to `Ready` if between tasks, or `Working` if mid-task
-   - Update the `Updated:` timestamp
-   - Add notes about current progress in the Notes section
-
-3. **If mid-task**, document in Notes:
+3. **If mid-task**, include in the note:
    - What you were working on
    - Next step to resume
    - Any context that would help you (or another agent) pick up later
@@ -38,18 +36,4 @@ Perform these steps:
 **Current Task:** Task 4 — JWT validation
 **Next Step:** Add token refresh logic in auth.ts:45
 **Context Notes:** Tasks 1-3 complete. Using RS256 per project conventions.
-```
-
-**Example status file update:**
-```markdown
-## Current
-**Plan:** plans/add-auth.md
-**Status:** Working
-**Started:** 2026-01-20
-**Updated:** 2026-01-21
-
-## Notes
-- Completed Tasks 1-3
-- Currently on Task 4: implementing JWT validation
-- Next: Add token refresh logic in auth.ts:45
 ```

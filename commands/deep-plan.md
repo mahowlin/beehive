@@ -19,9 +19,7 @@ Perform these steps:
 
 4. **Draft** — Write the plan using `plans/TEMPLATE.md` with all reasoning sections filled:
    - Objective (one sentence)
-   - Why This Approach (alternatives considered, reasoning)
    - Technical Context (key files, patterns, constraints)
-   - Implementation Strategy (logical flow)
    - Tasks (with rationale for each)
    - Risks / Open Questions
    - Done Criteria (explicit, verifiable)
@@ -32,8 +30,13 @@ Perform these steps:
    - Is each Done Criterion independently verifiable?
    - Are there implicit dependencies that should be explicit?
 
-6. **Write** — Exit plan mode and write the final plan file to `plans/`
+6. **Write** — Exit plan mode and:
+   - Write the final plan file to `plans/`
+   - Add a work item to `work.jsonl`:
+     ```json
+     {"id":"P-NNN","type":"plan","title":"Plan name","file":"plans/plan-name.md","status":"ready","priority":"HIGH","points":2,"assigned":"","parent":"","deliverable":"","created":"2026-01-20","updated":"2026-01-20"}
+     ```
 
 **When to use /deep-plan vs. quick plan creation:**
 - **/deep-plan**: Multi-file changes, architectural decisions, unfamiliar code areas, 3+ point plans
-- **Quick plan**: Single-file changes, well-understood patterns, 1-point plans where N/A sections suffice
+- **Quick plan**: Single-file changes, well-understood patterns, 1-point plans

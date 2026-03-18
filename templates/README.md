@@ -1,6 +1,6 @@
 # Templates
 
-Templates for coordination files. Used by `beehive --init`.
+Templates and reference docs. Used by `beehive --init`.
 
 ## Files
 
@@ -8,10 +8,5 @@ Templates for coordination files. Used by `beehive --init`.
 |------|---------|
 | `plan.md` | Plan template (copied to `plans/TEMPLATE.md`) |
 | `example-plan.md` | Example plan showing structure |
-| `TRACKER.md` | Tracker template (copied to `plans/_meta/`) |
-| `bee-status.md` | Bee status file template (copied to `.hive/`) |
-| `queen-status.md` | Queen status file template (copied to `.hive/`) |
-| `INBOX.md` | Plan request inbox (copied to `plans/`) |
-| `SESSION_LOG.md` | Session notes log (copied to `plans/_meta/`) |
-| `DEPENDENCIES.md` | Dependency graph (copied to `plans/_meta/`) |
+| `schemas.md` | JSONL schema reference for agents |
 | `gitignore` | Default .gitignore entries |

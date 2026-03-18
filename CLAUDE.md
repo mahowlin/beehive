@@ -96,6 +96,13 @@ beehive --yes  # Skip confirmation
 # Test config loading
 echo "CONF_SESSION=test-session" > .beehive.conf
 beehive --yes  # Should use "test-session" as tmux session name
+
+# Test model overrides
+echo -e "CONF_MODEL_BEE=test-bee\nCONF_MODEL_QUEEN=test-queen" > .beehive.conf
+beehive --yes  # Should show "Bee model: test-bee" and "Queen model: test-queen"
+
+# Test CLI model precedence
+beehive --bee-model cli-bee --yes  # CLI overrides config
 ```
 
 ## Key Functions

@@ -109,7 +109,7 @@ find_claude() {
 
 #######################################
 # Resolve setting with 4-tier precedence:
-#   specific CLI → global CLI/config → role config → global config
+#   role CLI → global CLI → role config → global config
 #######################################
 resolve_setting() {
     local cli_value="$1" cli_fallback="$2" config_value="$3" config_fallback="$4"
@@ -122,16 +122,17 @@ resolve_setting() {
 
 #######################################
 # Build per-pane shell command with env vars and model
+# Uses inline env prefix (VAR=val cmd) so vars are scoped to the command
 #######################################
 build_pane_command() {
     local prompt="$1" model="$2"
-    local env_cmd=""
-    [[ -n "$AWS_PROFILE" ]] && env_cmd+="export AWS_PROFILE=$(printf '%q' "$AWS_PROFILE"); "
-    [[ -n "$AWS_REGION" ]] && env_cmd+="export AWS_REGION=$(printf '%q' "$AWS_REGION"); "
-    [[ -n "$ANTHROPIC_BASE_URL" ]] && env_cmd+="export ANTHROPIC_BASE_URL=$(printf '%q' "$ANTHROPIC_BASE_URL"); "
-    [[ -n "$ANTHROPIC_API_KEY" ]] && env_cmd+="export ANTHROPIC_API_KEY=$(printf '%q' "$ANTHROPIC_API_KEY"); "
-    [[ -n "$model" ]] && env_cmd+="export ANTHROPIC_MODEL=$(printf '%q' "$model"); "
-    printf '%s%s %q' "$env_cmd" "$CLAUDE" "$prompt"
+    local env_prefix=""
+    [[ -n "$AWS_PROFILE" ]] && env_prefix+="AWS_PROFILE=$(printf '%q' "$AWS_PROFILE") "
+    [[ -n "$AWS_REGION" ]] && env_prefix+="AWS_REGION=$(printf '%q' "$AWS_REGION") "
+    [[ -n "$ANTHROPIC_BASE_URL" ]] && env_prefix+="ANTHROPIC_BASE_URL=$(printf '%q' "$ANTHROPIC_BASE_URL") "
+    [[ -n "$ANTHROPIC_API_KEY" ]] && env_prefix+="ANTHROPIC_API_KEY=$(printf '%q' "$ANTHROPIC_API_KEY") "
+    [[ -n "$model" ]] && env_prefix+="ANTHROPIC_MODEL=$(printf '%q' "$model") "
+    printf '%s%s %q' "$env_prefix" "$CLAUDE" "$prompt"
 }
 
 #######################################
@@ -1119,14 +1120,14 @@ main() {
             --validate)     cmd="validate"; shift ;;
             --dry-run)      DRY_RUN=true; shift ;;
             --json)         JSON_OUTPUT=true; shift ;;
-            --session)      CLI_SESSION_NAME="$2"; shift 2 ;;
-            --model)        CLI_MODEL="$2"; shift 2 ;;
-            --bee-model)    CLI_MODEL_BEE="$2"; shift 2 ;;
-            --queen-model)  CLI_MODEL_QUEEN="$2"; shift 2 ;;
-            --profile)      CLI_AWS_PROFILE="$2"; shift 2 ;;
-            --region)       CLI_AWS_REGION="$2"; shift 2 ;;
-            --base-url)     CLI_ANTHROPIC_BASE_URL="$2"; shift 2 ;;
-            --api-key)      CLI_ANTHROPIC_API_KEY="$2"; shift 2 ;;
+            --session)      [[ -z "${2:-}" ]] && die "--session requires a value"; CLI_SESSION_NAME="$2"; shift 2 ;;
+            --model)        [[ -z "${2:-}" ]] && die "--model requires a value"; CLI_MODEL="$2"; shift 2 ;;
+            --bee-model)    [[ -z "${2:-}" ]] && die "--bee-model requires a value"; CLI_MODEL_BEE="$2"; shift 2 ;;
+            --queen-model)  [[ -z "${2:-}" ]] && die "--queen-model requires a value"; CLI_MODEL_QUEEN="$2"; shift 2 ;;
+            --profile)      [[ -z "${2:-}" ]] && die "--profile requires a value"; CLI_AWS_PROFILE="$2"; shift 2 ;;
+            --region)       [[ -z "${2:-}" ]] && die "--region requires a value"; CLI_AWS_REGION="$2"; shift 2 ;;
+            --base-url)     [[ -z "${2:-}" ]] && die "--base-url requires a value"; CLI_ANTHROPIC_BASE_URL="$2"; shift 2 ;;
+            --api-key)      [[ -z "${2:-}" ]] && die "--api-key requires a value"; CLI_ANTHROPIC_API_KEY="$2"; shift 2 ;;
             --yes|-y)       skip_confirm=true; shift ;;
             --version)      echo "beehive v$VERSION"; exit 0 ;;
             --help|-h)      usage ;;
@@ -1158,6 +1159,7 @@ main() {
             load_config "$path" || true
 
             # Resolve all settings: CLI → config (with role-specific precedence)
+            # These are set as globals for do_launch() and build_pane_command()
             SESSION_NAME=$(resolve_setting "$CLI_SESSION_NAME" "" "$CONF_SESSION" "$(basename "$path")")
             AWS_PROFILE=$(resolve_setting "$CLI_AWS_PROFILE" "" "$CONF_AWS_PROFILE" "")
             AWS_REGION=$(resolve_setting "$CLI_AWS_REGION" "" "$CONF_AWS_REGION" "")

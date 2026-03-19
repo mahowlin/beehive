@@ -17,11 +17,10 @@ Perform these steps:
    - What are the pros/cons of each?
    - Why is the chosen approach best for this context?
 
-4. **Draft** — Write the plan using `plans/TEMPLATE.md` with all reasoning sections filled:
+4. **Draft** — Write the plan using `plans/TEMPLATE.md` with all sections filled:
    - Objective (one sentence)
    - Technical Context (key files, patterns, constraints)
    - Tasks (with rationale for each)
-   - Risks / Open Questions
    - Done Criteria (explicit, verifiable)
 
 5. **Validate** — Self-check the plan:

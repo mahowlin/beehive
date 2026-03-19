@@ -124,6 +124,7 @@ beehive --bee-model cli-bee --yes  # CLI overrides config
 
 ## Tmux Layout
 
+Default (3 bees):
 ```
 ┌──────────┬──────────┐
 │ Bee 1    │ Bee 2    │  (panes 0, 1)
@@ -132,7 +133,16 @@ beehive --bee-model cli-bee --yes  # CLI overrides config
 └──────────┴──────────┘
 ```
 
-Created with: `split-window -h`, `split-window -v` (x2), `select-layout tiled`
+With `--bees 5` (6 agents, 3x2 grid):
+```
+┌──────────┬──────────┬──────────┐
+│ Bee 1    │ Bee 2    │ Bee 3    │
+├──────────┼──────────┼──────────┤
+│ Bee 4    │ Bee 5    │ Queen    │
+└──────────┴──────────┴──────────┘
+```
+
+Created with: dynamic pane creation loop + `select-layout tiled` (works for any pane count)
 
 ## Adding Features
 
@@ -146,7 +156,7 @@ Created with: `split-window -h`, `split-window -v` (x2), `select-layout tiled`
 - **Add CLI flag**: Update `main()` case statement + `usage()`
 - **Change prompts**: Edit `bee_prompt` / `queen_prompt` in `do_launch()`
 - **Add config option**: Update `load_config()` case statement
-- **Change layout**: Modify tmux commands in `do_launch()`
+- **Change layout**: Modify tmux commands in `do_launch()` (dynamic pane count via `num_bees`)
 - **Upgrade existing projects**: `beehive --upgrade` (overwrites skills/commands/template, migrates markdown)
 
 ## Version

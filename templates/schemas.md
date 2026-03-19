@@ -20,7 +20,7 @@ Reference doc for agents. All coordination state is JSONL — one JSON object pe
 | `status` | yes | `ready`, `working`, `blocked`, `done`, `archived` | |
 | `priority` | yes | `HIGH`, `Medium`, `Low` | |
 | `points` | yes | `1`, `2`, `3` | 1=Small, 2=Medium, 3=Large |
-| `assigned` | yes | `""`, `bee-1`, `bee-2`, `bee-3`, `queen` | Empty = unassigned |
+| `assigned` | yes | `""`, `bee-1`..`bee-5`, `queen` | Empty = unassigned |
 | `parent` | no | `""` or parent id | Links task→plan or plan→master-plan |
 | `deliverable` | no | `""` or string | From master plan deliverable registry |
 | `created` | yes | `YYYY-MM-DD` | |
@@ -72,7 +72,7 @@ Reference doc for agents. All coordination state is JSONL — one JSON object pe
 |-------|----------|-------|
 | `date` | yes | Session date |
 | `summary` | yes | 1-2 sentences |
-| `agents` | yes | Object with agent states at session end |
+| `agents` | yes | Object with agent states at session end (include all active agents, e.g. bee-1..bee-N + queen) |
 | `changes` | yes | Array of notable changes |
 | `blockers` | yes | Array of current blockers |
 | `ready_items` | yes | Array of unassigned item ids |

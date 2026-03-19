@@ -15,7 +15,7 @@ Perform these steps:
 **Fields:**
 - `date` — session date
 - `summary` — 1-2 sentences of what happened
-- `agents` — object with each agent's current item and status
+- `agents` — object with each active agent's current item and status (include all agents in the session, e.g. bee-1..bee-N + queen)
 - `changes` — array of notable changes this session
 - `blockers` — array of current blockers (empty if none)
 - `ready_items` — array of unassigned work item ids

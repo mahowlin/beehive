@@ -10,7 +10,7 @@ Multi-agent orchestration for Claude Code.
 └──────────┴──────────┘
 ```
 
-**3 Bees** execute plans. **1 Queen** works on plans and coordinates. **You** (the Beekeeper) direct traffic.
+**3-5 Bees** execute plans. **1 Queen** works on plans and coordinates. **You** (the Beekeeper) direct traffic.
 
 **Who is this for?** Developers who want to run multiple Claude Code agents in parallel on a single codebase, with file-based coordination and interactive oversight.
 
@@ -69,6 +69,8 @@ This overwrites skills, commands, and the plan template with the latest versions
 
 ## What `beehive --init` Creates
 
+Source templates live in `skills/` and `commands/` in the beehive repo; `--init` copies them into your project as `.skills/` and `.claude/commands/`.
+
 ```
 myproject/
 ├── CLAUDE.md                    # Project instructions for agents
@@ -90,10 +92,7 @@ myproject/
         ├── inbox.jsonl          # Out-of-scope reports (Bees append, Queen processes)
         ├── sessions.jsonl       # Session reports (Queen owns)
         ├── archive.jsonl        # Completed/archived work items
-        └── claims/              # Agent state (gitignored)
-            ├── bee-1.jsonl
-            ├── bee-2.jsonl
-            ├── bee-3.jsonl
+        └── claims/              # Agent state (gitignored, session-scoped)
             └── queen.jsonl
 ```
 
@@ -185,6 +184,7 @@ CONF_MODEL=us.anthropic.claude-sonnet-4-20250514-v1:0
 ```bash
 CONF_SESSION=my-session          # Custom tmux session name
 CONF_CLAUDE_CMD=/path/to/claude  # Custom claude path
+CONF_BEES=5                      # Number of Bees (3-5, default: 3)
 ```
 
 **Per-role model overrides:**
@@ -195,6 +195,20 @@ CONF_MODEL_QUEEN=claude-opus-4-6     # Override for Queen
 ```
 
 Precedence: role CLI (`--bee-model`) → global CLI (`--model`) → role config (`CONF_MODEL_BEE`) → global config (`CONF_MODEL`)
+
+**Scaling up:**
+
+```bash
+beehive --bees 5    # 5 bees + Queen (6 agents)
+```
+
+```
+┌──────────┬──────────┬──────────┐
+│ 🐝 Bee 1 │ 🐝 Bee 2 │ 🐝 Bee 3 │
+├──────────┼──────────┼──────────┤
+│ 🐝 Bee 4 │ 🐝 Bee 5 │ 🐝 Queen │
+└──────────┴──────────┴──────────┘
+```
 
 **Tmux controls:**
 
@@ -222,6 +236,7 @@ Options:
     --model MODEL        Anthropic model override
     --bee-model MODEL    Model override for all Bees
     --queen-model MODEL  Model override for Queen
+    --bees N             Number of Bees (3-5, default: 3)
     --profile PROF       AWS profile for Bedrock
     --region REGION      AWS region for Bedrock
     --base-url URL       Anthropic API base URL (for API proxies)

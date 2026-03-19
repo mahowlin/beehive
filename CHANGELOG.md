@@ -13,8 +13,10 @@ All notable changes to Beehive are documented here.
 - **Commands updated** — `/buzz`, `/bedtime`, `/report`, `/session-report`, `/deep-plan` all use JSONL
 - **Plan template simplified** — removed markdown status sections; Session State kept for in-plan context
 - **`beehive --status`** reads JSONL and displays work items, agent states, and inbox
+- **Bee claim files are session-scoped** — `do_launch()` creates `bee-N.jsonl` for active bees; `--init` only creates `queen.jsonl`
 
 ### Added
+- **`--bees N` flag** — configurable agent count (3-5 bees, default 3). `CONF_BEES` config key. 3x2 grid layout for 5+1 agents.
 - **Automatic migration** — `beehive --upgrade` converts TRACKER.md → work.jsonl/archive.jsonl, .hive/ → claims/, INBOX.md/SESSION_LOG.md → migrated/
 - **Per-role model overrides** — `--bee-model` / `--queen-model` CLI flags and `CONF_MODEL_BEE` / `CONF_MODEL_QUEEN` config keys with 4-tier precedence (role CLI → global CLI → role config → global config). Based on PR #3 by @pleseer.
 - **`beehive --validate`** — validates all JSONL files for schema correctness, field presence, status/action enum values, and cross-references (working items without claims). Exit 1 on errors.
@@ -27,6 +29,14 @@ All notable changes to Beehive are documented here.
 - **Stale `.hive/` gitignore cleanup** — upgrade removes dead `.hive/` entry from .gitignore
 
 ### Fixed
+- **Legacy tracker discovery** — migration now finds TRACKER.md at all 3 historical locations (v0.2.0 repo `plans/TRACKER.md`, v0.2.0 workspace `TRACKER.md`, v0.2.1+ `_meta/TRACKER.md`)
+- **Transactional migration** — TRACKER migration writes to temp files and validates before committing; partial failure leaves no corrupt state
+- **Inbox hard-fail on malformed** — `--status` inbox display now skips malformed lines with warnings instead of crashing
+- **Flags accepted as values** — `--model --bee-model` no longer silently treats `--bee-model` as the model name; flags starting with `-` are rejected as values
+- **TRACKER pipe-in-cells** — migration now checks column count and skips unparseable rows
+- **Claim trailing blank lines** — `--status` now finds last valid JSON line, ignoring trailing blanks
+- **Cross-ref accepts terminal claims** — validation now checks latest action per item (not just any historical claim)
+- **`/deep-plan` template drift** — removed "Risks / Open Questions" reference that no longer exists in plan template
 - `((line_num++))` crash on bash 5+ (Linux) in `--status` — now uses `$((line_num + 1))`
 - `((git_count++))` crash on bash 5+ (Linux) in mode detection — same fix
 - `jq` dependency required unconditionally after arg parsing (no longer skipped for bare launch)

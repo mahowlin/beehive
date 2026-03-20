@@ -12,9 +12,9 @@
 
 ## Plan Index
 
-| ID | Plan | Deliverable | Status |
-|----|------|-------------|--------|
-| P-001 | [plans/name.md] | D-1 | ready |
+| Plan | Deliverable | Status |
+|------|-------------|--------|
+| [plans/name.md] | D-1 | ready |
 
 ## Notes
 

@@ -1,5 +1,5 @@
-# Beehive agent state (session-specific, not shared)
-plans/_meta/claims/
+# Beads issue tracker (local database)
+.beads/
 
 # Claude Code
 .claude/

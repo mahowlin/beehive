@@ -12,7 +12,7 @@ Multi-agent orchestration for Claude Code.
 
 **3-5 Bees** execute plans. **1 Queen** works on plans and coordinates. **You** (the Beekeeper) direct traffic.
 
-**Who is this for?** Developers who want to run multiple Claude Code agents in parallel on a single codebase, with file-based coordination and interactive oversight.
+**Who is this for?** Developers who want to run multiple Claude Code agents in parallel on a single codebase, with structured coordination and interactive oversight.
 
 Inspired by [Gas Town](https://steve-yegge.medium.com/welcome-to-gas-town-4f25ee16dd04).
 
@@ -22,6 +22,7 @@ Inspired by [Gas Town](https://steve-yegge.medium.com/welcome-to-gas-town-4f25ee
 |------------|-------|----------------------|
 | tmux | `brew install tmux` | `sudo apt install tmux` |
 | jq | `brew install jq` | `sudo apt install jq` |
+| [beads](https://github.com/steveyegge/beads) | `brew install steveyegge/tap/beads` | See [beads install](https://github.com/steveyegge/beads#installation) |
 | Claude Code | [Install guide](https://docs.anthropic.com/en/docs/claude-code) | [Install guide](https://docs.anthropic.com/en/docs/claude-code) |
 | Clipboard | `pbcopy` (built-in) | `sudo apt install xclip` or `xsel` |
 
@@ -63,7 +64,7 @@ beehive
 beehive --upgrade
 ```
 
-This overwrites skills, commands, and the plan template with the latest versions. If your project uses the old markdown coordination files (.hive/, TRACKER.md, etc.), `--upgrade` migrates them to JSONL automatically, preserving old files in `plans/_meta/migrated/`.
+This overwrites skills, commands, and the plan template with the latest versions. If your project still uses legacy markdown tracking (`TRACKER.md`, `.hive/`, `INBOX.md`, `SESSION_LOG.md`), `--upgrade` migrates it directly to beads and preserves the originals in `plans/_meta/migrated/`.
 
 **Install note:** Symlink goes to `/usr/local/bin` (works on macOS and Linux). Use `sudo` if needed. On Apple Silicon, `/opt/homebrew/bin` also works.
 
@@ -74,6 +75,7 @@ Source templates live in `skills/` and `commands/` in the beehive repo; `--init`
 ```
 myproject/
 ├── CLAUDE.md                    # Project instructions for agents
+├── .beads/                      # Beads issue tracker (Dolt database, gitignored)
 ├── .skills/
 │   ├── bee.md                   # Bee behavior rules
 │   └── queen.md                 # Queen behavior rules
@@ -88,12 +90,7 @@ myproject/
     ├── TEMPLATE.md              # Template for new plans
     ├── completed/               # Archived plans
     └── _meta/
-        ├── work.jsonl           # Work items — plans and tasks (Queen owns)
-        ├── inbox.jsonl          # Out-of-scope reports (Bees append, Queen processes)
-        ├── sessions.jsonl       # Session reports (Queen owns)
-        ├── archive.jsonl        # Completed/archived work items
-        └── claims/              # Agent state (gitignored, session-scoped)
-            └── queen.jsonl
+        └── sessions.jsonl       # Session reports (Queen owns)
 ```
 
 **Workspace mode** (multiple git repos in one directory) creates a CLAUDE.md with a repository inventory table. Git worktrees are fully supported.
@@ -111,55 +108,50 @@ myproject/
       ┌───────────┐            ┌───────────┐            ┌───────────┐
       │   Bee 1   │            │   Bee 2   │            │   Bee 3   │
       └─────┬─────┘            └─────┬─────┘            └─────┬─────┘
-            │ writes                 │ writes                 │ writes
-            ▼                        ▼                        ▼
-      ┌───────────┐            ┌───────────┐            ┌───────────┐
-      │  claims/  │            │  claims/  │            │  claims/  │
-      │bee-1.jsonl│            │bee-2.jsonl│            │bee-3.jsonl│
-      └─────┬─────┘            └─────┬─────┘            └─────┬─────┘
+            │ bd commands            │ bd commands            │ bd commands
             └────────────────────────┼────────────────────────┘
-                                     │ Queen reads claims/*.jsonl
+                                     │
+                                     ▼
+                              ┌─────────────┐
+                              │   .beads/   │ ← Dolt database
+                              │  (bd CLI)   │   Atomic claims,
+                              └──────┬──────┘   dependencies,
+                                     │          audit trail
                                      ▼
                               ┌─────────────┐
                               │    Queen    │───────────────────────┘
                               └──────┬──────┘
-               ┌─────────────────────┼─────────────────────┐
-               │ writes              │ reads               │ writes
-               ▼                     ▼                     ▼
-        ┌─────────────┐       ┌─────────────┐       ┌─────────────┐
-        │ work.jsonl  │       │ inbox.jsonl │       │   plans/    │
-        │  (items)    │       │  (reports)  │       │(plan files) │
-        └─────────────┘       └──────┬──────┘       └──────┬──────┘
-                                     ▲                     │
-                      Bees /report ──┘                     │ Bees read
-                                                           ▼
-      ┌───────────┐            ┌───────────┐            ┌───────────┐
-      │   Bee 1   │            │   Bee 2   │            │   Bee 3   │
-      └───────────┘            └───────────┘            └───────────┘
+                                     │ creates issues, verifies,
+                                     │ closes, coordinates
+                                     ▼
+                              ┌─────────────┐
+                              │   plans/    │
+                              │(plan files) │
+                              └─────────────┘
 ```
 
 **Roles:**
-- **Queen** — Works on plans, coordinates hive, owns `work.jsonl`, verifies completion
-- **Bees** — Execute plans/tasks, write to own `claims/bee-N.jsonl`, report discoveries
+- **Queen** — Works on plans, coordinates hive, creates/assigns work, verifies completion
+- **Bees** — Execute plans/tasks, claim work atomically via `bd update --claim`, report discoveries
 - **Beekeeper (you)** — Direct agents, copy messages between panes, approve major steps
 
-**Work items** are either **plans** (markdown file + work.jsonl entry) or **tasks** (inline in work.jsonl with `done_when` and `context` fields). Tasks are for lightweight work; plans are for complex multi-step work.
+**Work items** are **beads issues**: either **epics** (with a markdown plan file in `plans/`) or **tasks** (with acceptance criteria in the issue description). Tasks are for lightweight work; epics are for complex multi-step work.
 
 **Workflow:**
 1. Tell Queen what to build
-2. Queen creates plans/tasks in `work.jsonl` (and plan files in `plans/`)
-3. Direct each Bee to claim work (Queen can also claim)
-4. Agents execute, update their claim files, run `/buzz` when done
-5. Queen verifies and archives completed work
+2. Queen creates epics/tasks via `bd create` (and plan files in `plans/`)
+3. Agents claim work: `bd update <id> --claim` (atomic, no conflicts)
+4. Agents execute, add progress comments, run `/buzz` when done
+5. Queen verifies and closes: `bd close <id>`
 
 ## Commands
 
 | Command | Who | Purpose |
 |---------|-----|---------|
 | `/buzz` | Any | Check in: plan hygiene, self-check, completion. Queen also coordinates hive. |
-| `/report` | Any | Submit out-of-scope discoveries to inbox.jsonl |
-| `/bedtime` | Any | Save state to claims file before break or session end |
-| `/session-report` | Queen | Write end-of-session report to sessions.jsonl |
+| `/report` | Any | Report out-of-scope discoveries (creates beads issue) |
+| `/bedtime` | Any | Save state before break or session end |
+| `/session-report` | Queen | Write end-of-session report to session metadata log |
 | `/deep-plan` | Queen | Structured exploration before plan creation |
 | `/review` | Queen | Strategic project assessment (every few hours) |
 
@@ -228,8 +220,8 @@ Commands:
     beehive [path]              Launch agents (default: current directory)
     beehive --init [path]       Initialize repo/workspace structure
     beehive --upgrade [path]    Upgrade skills, commands, and template (preserves data)
-    beehive --status [path]     Show work items, agent states, and inbox
-    beehive --validate [path]   Validate JSONL state files for schema correctness
+    beehive --status [path]     Show work items, agent states, and ready queue
+    beehive --validate [path]   Validate beads health and session metadata log
 
 Options:
     --session NAME       Session name (default: folder name)
@@ -258,6 +250,10 @@ Options:
 **"jq required"**
 - macOS: `brew install jq`
 - Linux: `sudo apt install jq`
+
+**"bd (beads) required"**
+- macOS: `brew install steveyegge/tap/beads`
+- See [beads installation](https://github.com/steveyegge/beads#installation) for other platforms
 
 **"Claude CLI not found"**
 - Ensure `claude` is installed and in your PATH

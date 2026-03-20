@@ -31,9 +31,18 @@ Perform these steps:
 
 6. **Write** — Exit plan mode and:
    - Write the final plan file to `plans/`
-   - Add a work item to `work.jsonl`:
-     ```json
-     {"id":"P-NNN","type":"plan","title":"Plan name","file":"plans/plan-name.md","status":"ready","priority":"HIGH","points":2,"assigned":"","parent":"","deliverable":"","created":"2026-01-20","updated":"2026-01-20"}
+   - Create the epic in beads:
+     ```bash
+     bd create "Plan name" --type epic -p 1 --description "See plans/plan-name.md"
+     ```
+   - Create child tasks:
+     ```bash
+     bd create "Task 1 description" --parent <epic-id> --description "Done when: ..."
+     bd create "Task 2 description" --parent <epic-id> --description "Done when: ..."
+     ```
+   - Set dependencies between tasks if needed:
+     ```bash
+     bd dep add <task-2-id> <task-1-id>   # task-2 depends on task-1
      ```
 
 **When to use /deep-plan vs. quick plan creation:**

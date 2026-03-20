@@ -6,7 +6,7 @@
 #   beehive --init [path]    Initialize repo/workspace structure
 #   beehive --upgrade [path] Upgrade skills, commands, and template
 #   beehive --status [path]  Show work items, agent states, and inbox
-#   beehive --validate [path] Validate JSONL state files
+#   beehive --validate [path] Validate beads health and sessions metadata
 #
 # The tool auto-detects:
 #   - Workspace mode: if path contains multiple git repos
@@ -46,6 +46,24 @@ warn() { echo -e "${YELLOW}WARNING: $1${NC}" >&2; }
 info() { echo -e "${CYAN}$1${NC}"; }
 success() { echo -e "${GREEN}$1${NC}"; }
 require_jq() { command -v jq &>/dev/null || die "jq required. Install: brew install jq / apt install jq"; }
+require_bd() {
+    command -v bd &>/dev/null || die "bd (beads) required. Install: brew install steveyegge/tap/beads"
+    local bd_ver
+    bd_ver=$(bd version 2>/dev/null | awk '{print $3}')
+    if [[ -z "$bd_ver" ]]; then
+        die "Could not determine bd version. Run: bd version"
+    fi
+    # Compare version: require >= 0.61.0
+    local IFS='.'
+    local -a got=($bd_ver) want=(0 61 0)
+    for i in 0 1 2; do
+        local g="${got[$i]:-0}" w="${want[$i]:-0}"
+        if (( g > w )); then return 0; fi
+        if (( g < w )); then
+            die "bd (beads) v0.61.0+ required (got v$bd_ver). Update: brew upgrade beads"
+        fi
+    done
+}
 
 #######################################
 # Parse config file safely (no source)
@@ -126,13 +144,14 @@ resolve_setting() {
 # Uses inline env prefix (VAR=val cmd) so vars are scoped to the command
 #######################################
 build_pane_command() {
-    local prompt="$1" model="$2"
+    local prompt="$1" model="$2" actor="${3:-}"
     local env_prefix=""
     [[ -n "$AWS_PROFILE" ]] && env_prefix+="AWS_PROFILE=$(printf '%q' "$AWS_PROFILE") "
     [[ -n "$AWS_REGION" ]] && env_prefix+="AWS_REGION=$(printf '%q' "$AWS_REGION") "
     [[ -n "$ANTHROPIC_BASE_URL" ]] && env_prefix+="ANTHROPIC_BASE_URL=$(printf '%q' "$ANTHROPIC_BASE_URL") "
     [[ -n "$ANTHROPIC_API_KEY" ]] && env_prefix+="ANTHROPIC_API_KEY=$(printf '%q' "$ANTHROPIC_API_KEY") "
     [[ -n "$model" ]] && env_prefix+="ANTHROPIC_MODEL=$(printf '%q' "$model") "
+    [[ -n "$actor" ]] && env_prefix+="BD_ACTOR=$(printf '%q' "$actor") "
     printf '%s%s %q' "$env_prefix" "$CLAUDE" "$prompt"
 }
 
@@ -178,16 +197,19 @@ init_skills() {
     [[ -f "$dir/.skills/queen.md" ]] || cp "$SCRIPT_DIR/skills/queen.md" "$dir/.skills/queen.md"
 }
 
-init_jsonl() {
+init_beads_metadata() {
     local dir="$1"
     local meta="$dir/plans/_meta"
-    mkdir -p "$meta/claims"
+    mkdir -p "$meta"
 
-    for f in work.jsonl inbox.jsonl sessions.jsonl archive.jsonl; do
-        [[ -f "$meta/$f" ]] || touch "$meta/$f"
-    done
-    # Only create queen.jsonl — bee claim files are session-scoped (created by do_launch)
-    [[ -f "$meta/claims/queen.jsonl" ]] || touch "$meta/claims/queen.jsonl"
+    # Sessions file is beehive-specific (not in beads)
+    [[ -f "$meta/sessions.jsonl" ]] || touch "$meta/sessions.jsonl"
+
+    # Initialize beads if not already present
+    if [[ ! -d "$dir/.beads" ]]; then
+        info "Initializing beads issue tracker..."
+        (cd "$dir" && bd init --quiet) || die "bd init failed"
+    fi
 }
 
 init_commands() {
@@ -209,16 +231,22 @@ init_gitignore() {
         return
     fi
 
-    # If .gitignore exists, ensure claims/ is in it
-    if ! grep -q "plans/_meta/claims/" "$gitignore" 2>/dev/null; then
+    # Ensure .beads/ is in .gitignore
+    if ! grep -q '\.beads/' "$gitignore" 2>/dev/null; then
         echo "" >> "$gitignore"
-        echo "# Beehive agent state (session-specific)" >> "$gitignore"
-        echo "plans/_meta/claims/" >> "$gitignore"
+        echo "# Beads issue tracker (local database)" >> "$gitignore"
+        echo ".beads/" >> "$gitignore"
     fi
 
-    # Remove stale .hive/ entry from old versions
+    # Remove stale entries from old versions
     if grep -q '^\.hive/' "$gitignore" 2>/dev/null; then
         sed -i.bak '/^\.hive\//d' "$gitignore" && rm -f "$gitignore.bak"
+    fi
+    if grep -q 'plans/_meta/' "$gitignore" 2>/dev/null; then
+        awk '
+            $0 ~ /^plans\/\_meta\/claims\/$/ { next }
+            { print }
+        ' "$gitignore" > "$gitignore.tmp" && mv "$gitignore.tmp" "$gitignore"
     fi
 }
 
@@ -243,11 +271,14 @@ init_repo() {
 - **Queen**: Works on plans, coordinates hive, tracks progress, verifies completion. Read `.skills/queen.md`
 - **Bees**: Execute plans, update status, report discoveries. Read `.skills/bee.md`
 
-## Coordination Files
-- `plans/_meta/work.jsonl` - Work items: plans and tasks (Queen owns)
-- `plans/_meta/inbox.jsonl` - Out-of-scope reports from Bees (Bees append, Queen processes)
-- `plans/_meta/sessions.jsonl` - Session reports (Queen owns)
-- `plans/_meta/claims/{agent}.jsonl` - Agent state (each agent owns their own)
+## Coordination
+This project uses **beads** (`bd`) for task tracking and coordination.
+- `bd ready` — find available work
+- `bd update <id> --claim` — claim a task
+- `bd close <id>` — mark complete
+- `bd create` — create new issues/tasks
+- `plans/` — plan markdown files (referenced by beads issues)
+- `plans/_meta/sessions.jsonl` — session reports (Queen owns)
 
 ## Guidelines
 - Ask approval before environment-impacting operations
@@ -255,7 +286,7 @@ init_repo() {
 - Use /buzz, /report, /bedtime, /session-report, /deep-plan commands
 EOF
 
-    init_jsonl "$dir"
+    init_beads_metadata "$dir"
     init_skills "$dir"
     init_commands "$dir"
     init_template "$dir"
@@ -288,11 +319,14 @@ init_workspace() {
             echo "- **Queen**: Works on plans, coordinates hive, tracks progress, verifies completion. Read \`.skills/queen.md\`"
             echo "- **Bees**: Execute plans, update status, report discoveries. Read \`.skills/bee.md\`"
             echo ""
-            echo "## Coordination Files"
-            echo "- \`plans/_meta/work.jsonl\` - Work items: plans and tasks (Queen owns)"
-            echo "- \`plans/_meta/inbox.jsonl\` - Out-of-scope reports from Bees (Bees append, Queen processes)"
-            echo "- \`plans/_meta/sessions.jsonl\` - Session reports (Queen owns)"
-            echo "- \`plans/_meta/claims/{agent}.jsonl\` - Agent state (each agent owns their own)"
+            echo "## Coordination"
+            echo "This project uses **beads** (\`bd\`) for task tracking and coordination."
+            echo "- \`bd ready\` — find available work"
+            echo "- \`bd update <id> --claim\` — claim a task"
+            echo "- \`bd close <id>\` — mark complete"
+            echo "- \`bd create\` — create new issues/tasks"
+            echo "- \`plans/\` — plan markdown files (referenced by beads issues)"
+            echo "- \`plans/_meta/sessions.jsonl\` — session reports (Queen owns)"
             echo ""
             echo "## Guidelines"
             echo "- Ask approval before environment-impacting operations"
@@ -313,7 +347,7 @@ init_workspace() {
         }
     done
 
-    init_jsonl "$dir"
+    init_beads_metadata "$dir"
     init_skills "$dir"
     init_commands "$dir"
     init_template "$dir"
@@ -377,37 +411,26 @@ do_launch() {
     done
     tmux select-pane -t "$SESSION_NAME:0.$num_bees" -T "🐝 Queen"
 
-    # Prompts - agents read their skill files
-    local bee_prompt="Read CLAUDE.md, .skills/bee.md, then plans/_meta/work.jsonl and plans/_meta/claims/bee-%d.jsonl. You are Bee %d. Follow your skill instructions. Use /report for discoveries, /buzz to check in, /bedtime to save state. Wait for user direction."
+    # Prompts - agents read their skill files and use bd for coordination
+    local bee_prompt="Read CLAUDE.md and .skills/bee.md. You are Bee %d. Run 'bd prime' for workflow context. Follow your skill instructions. Use /report for discoveries, /buzz to check in, /bedtime to save state. Wait for user direction."
 
-    local queen_prompt="Read CLAUDE.md, .skills/queen.md, then plans/_meta/work.jsonl and plans/_meta/claims/queen.jsonl. You are the Queen. Follow your skill instructions. You work on plans AND coordinate. Use /buzz to consolidate, /session-report at end of session. Wait for user direction."
+    local queen_prompt="Read CLAUDE.md and .skills/queen.md. You are the Queen. Run 'bd prime' for workflow context. Follow your skill instructions. You work on plans AND coordinate. Use /buzz to consolidate, /session-report at end of session. Wait for user direction."
 
-    # Create bee claim files for this session (session-scoped, claims/ is gitignored)
-    # Wipe previous bee claims — they're session-scoped, not persistent
-    local claims_dir="$path/plans/_meta/claims"
-    mkdir -p "$claims_dir"
-    for f in "$claims_dir"/bee-*.jsonl; do
-        [[ -f "$f" ]] && : > "$f"
-    done
-    for (( i=1; i<=num_bees; i++ )); do
-        touch "$claims_dir/bee-$i.jsonl"
-    done
-
-    # Launch bees with bee_model
+    # Launch bees with bee_model and BD_ACTOR identity
     for (( i=0; i<num_bees; i++ )); do
         local prompt
         local bee_num=$((i + 1))
         # shellcheck disable=SC2059
-        printf -v prompt "$bee_prompt" "$bee_num" "$bee_num"
+        printf -v prompt "$bee_prompt" "$bee_num"
         local pane_cmd
-        pane_cmd=$(build_pane_command "$prompt" "$bee_model")
+        pane_cmd=$(build_pane_command "$prompt" "$bee_model" "bee-$bee_num")
         tmux send-keys -t "$SESSION_NAME:0.$i" "$pane_cmd" Enter
         sleep 1
     done
 
-    # Launch queen with queen_model
+    # Launch queen with queen_model and BD_ACTOR identity
     local queen_cmd
-    queen_cmd=$(build_pane_command "$queen_prompt" "$queen_model")
+    queen_cmd=$(build_pane_command "$queen_prompt" "$queen_model" "queen")
     tmux send-keys -t "$SESSION_NAME:0.$num_bees" "$queen_cmd" Enter
     tmux select-pane -t "$SESSION_NAME:0.$num_bees"
 
@@ -470,27 +493,25 @@ do_upgrade() {
         [[ -f "$path/.claude/commands/refresh.md" ]] && echo "    .claude/commands/refresh.md"
         [[ -f "$path/WORKSPACE.md" ]] && echo "    WORKSPACE.md → plans/_meta/migrated/"
         echo ""
-        echo "  Would create (if missing):"
-        for f in work.jsonl inbox.jsonl sessions.jsonl archive.jsonl; do
-            [[ ! -f "$path/plans/_meta/$f" ]] && echo "    plans/_meta/$f"
-        done
-        for agent in queen; do
-            [[ ! -f "$path/plans/_meta/claims/$agent.jsonl" ]] && echo "    plans/_meta/claims/$agent.jsonl"
-        done
+        echo "  Would initialize (if missing):"
+        [[ ! -d "$path/.beads" ]] && echo "    .beads/ (beads issue tracker)"
+        [[ ! -f "$path/plans/_meta/sessions.jsonl" ]] && echo "    plans/_meta/sessions.jsonl"
         echo ""
 
-        # Check what migration would do
-        _migrate_markdown "$path"
+        # Check legacy markdown migration (v0.2.x-v0.4.x → beads)
+        _migrate_markdown_to_beads "$path"
 
-        # Check gitignore changes
-        local gitignore="$path/.gitignore"
-        if [[ -f "$gitignore" ]]; then
-            if ! grep -q "plans/_meta/claims/" "$gitignore" 2>/dev/null; then
-                echo "  Would add to .gitignore: plans/_meta/claims/"
-            fi
-            if grep -q '^\.hive/' "$gitignore" 2>/dev/null; then
-                echo "  Would remove from .gitignore: .hive/"
-            fi
+        [[ -f "$path/0.5.0_PRE_RELEASE_FEEDBACK.md" ]] && echo "  Would remove: 0.5.0_PRE_RELEASE_FEEDBACK.md"
+        [[ -f "$path/plans/_review_prompt.md" ]] && echo "  Would remove: plans/_review_prompt.md"
+
+
+        if [[ -e "$path/templates/schemas.md" ]]; then
+            echo "  Would remove: templates/schemas.md"
+        fi
+
+        if [[ -f "$path/0.5.0_PRE_RELEASE_FEEDBACK.md" ]]; then
+            echo ""
+            warn "Release artifact present: 0.5.0_PRE_RELEASE_FEEDBACK.md"
         fi
 
         echo ""
@@ -524,35 +545,38 @@ do_upgrade() {
     # Upgrade plan template (overwrite)
     cp "$SCRIPT_DIR/templates/plan.md" "$path/plans/TEMPLATE.md"
 
-    # Create JSONL structure (idempotent)
-    init_jsonl "$path"
+    # Initialize beads + sessions metadata (idempotent)
+    init_beads_metadata "$path"
 
-    # Migrate from old markdown structure if present
-    _migrate_markdown "$path"
+    # Migrate legacy markdown tracking directly to beads
+    _migrate_markdown_to_beads "$path"
+
+    # Clean up removed files/dirs
+    rm -f "$path/templates/schemas.md" 2>/dev/null || true
+    rm -f "$path/0.5.0_PRE_RELEASE_FEEDBACK.md" 2>/dev/null || true
+    rm -f "$path/plans/_review_prompt.md" 2>/dev/null || true
+
 
     # Update gitignore
     init_gitignore "$path"
 
     success "✓ Upgraded to v$VERSION"
     echo "  Skills, commands, and template updated."
-    echo "  JSONL coordination files created."
+    echo "  Beads issue tracker initialized."
     echo ""
     echo "  Review changes:"
     echo "    .skills/bee.md, .skills/queen.md"
     echo "    .claude/commands/*"
     echo "    plans/TEMPLATE.md"
-    echo "    plans/_meta/*.jsonl, plans/_meta/claims/"
+    echo "    .beads/ (issue tracker database)"
 }
 
-_migrate_markdown() {
+_migrate_markdown_to_beads() {
     local path="$1"
     local meta="$path/plans/_meta"
     local migrated="$meta/migrated"
-    local needs_migrate=false
-
-    # Discover TRACKER.md at all historical locations (prefer _meta/ if multiple exist)
-    # v0.2.1+: plans/_meta/TRACKER.md | v0.2.0 repo: plans/TRACKER.md | v0.2.0 workspace: TRACKER.md
     local tracker_file=""
+
     if [[ -f "$meta/TRACKER.md" ]]; then
         tracker_file="$meta/TRACKER.md"
     elif [[ -f "$path/plans/TRACKER.md" ]]; then
@@ -561,16 +585,18 @@ _migrate_markdown() {
         tracker_file="$path/TRACKER.md"
     fi
 
-    # Detect old structure
-    [[ -d "$path/.hive" ]] && needs_migrate=true
-    [[ -n "$tracker_file" ]] && needs_migrate=true
-    $needs_migrate || return 0
-
     if $DRY_RUN; then
+        local would_migrate=false
+        [[ -n "$tracker_file" ]] && would_migrate=true
+        [[ -d "$path/.hive" ]] && would_migrate=true
+        [[ -f "$path/plans/INBOX.md" ]] && would_migrate=true
+        [[ -f "$meta/SESSION_LOG.md" ]] && would_migrate=true
+        [[ -f "$meta/DEPENDENCIES.md" ]] && would_migrate=true
+        $would_migrate || return 0
+
         echo "  Would migrate:"
-        [[ -n "$tracker_file" ]] && [[ ! -s "$meta/work.jsonl" ]] && {
-            local active_count=0 completed_count=0
-            local section=""
+        if [[ -n "$tracker_file" ]]; then
+            local active_count=0 completed_count=0 section=""
             while IFS= read -r line; do
                 [[ "$line" == *"## Active"* ]] && { section="active"; continue; }
                 [[ "$line" == *"## Completed"* ]] && { section="completed"; continue; }
@@ -580,282 +606,182 @@ _migrate_markdown() {
                 [[ "$section" == "active" ]] && active_count=$((active_count + 1))
                 [[ "$section" == "completed" ]] && completed_count=$((completed_count + 1))
             done < "$tracker_file"
-            echo "    TRACKER.md ($(basename "$(dirname "$tracker_file")")) → work.jsonl ($active_count active) + archive.jsonl ($completed_count completed)"
-        }
-        [[ -d "$path/.hive" ]] && {
-            local agent_count=0
-            for f in "$path"/.hive/*.md; do [[ -f "$f" ]] && agent_count=$((agent_count + 1)); done
-            echo "    .hive/ → claims/ ($agent_count agent files)"
-        }
-        [[ -f "$path/plans/INBOX.md" ]] && [[ ! -s "$meta/inbox.jsonl" ]] && echo "    plans/INBOX.md → migrated/"
-        [[ -f "$meta/SESSION_LOG.md" ]] && [[ ! -s "$meta/sessions.jsonl" ]] && echo "    SESSION_LOG.md → migrated/"
-        [[ -f "$meta/DEPENDENCIES.md" ]] && echo "    DEPENDENCIES.md → migrated/"
+            echo "    TRACKER.md → beads ($active_count active, $completed_count completed)"
+            echo "    id-mapping.json → plans/_meta/migrated/"
+            echo "    Note: relationships are not imported from TRACKER.md"
+        fi
+        [[ -d "$path/.hive" ]] && echo "    .hive/ → plans/_meta/migrated/"
+        [[ -f "$path/plans/INBOX.md" ]] && echo "    INBOX.md → plans/_meta/migrated/"
+        [[ -f "$meta/SESSION_LOG.md" ]] && echo "    SESSION_LOG.md → plans/_meta/migrated/"
+        [[ -f "$meta/DEPENDENCIES.md" ]] && echo "    DEPENDENCIES.md → plans/_meta/migrated/"
         return 0
     fi
 
-    info "Migrating from markdown to JSONL..."
+    local existing_count
+    existing_count=$(cd "$path" && bd list --json --all 2>/dev/null | jq 'length' 2>/dev/null || echo "0")
+    if [[ "$existing_count" -gt 0 ]]; then
+        info "  Beads already has issues; skipping tracker migration"
+        return 0
+    fi
+
+    local needs_archive=false
+    [[ -n "$tracker_file" ]] && needs_archive=true
+    [[ -d "$path/.hive" ]] && needs_archive=true
+    [[ -f "$path/plans/INBOX.md" ]] && needs_archive=true
+    [[ -f "$meta/SESSION_LOG.md" ]] && needs_archive=true
+    [[ -f "$meta/DEPENDENCIES.md" ]] && needs_archive=true
+    $needs_archive || return 0
+
     mkdir -p "$migrated"
 
-    # Migration report tracking
     local report_lines=()
     _report() { report_lines+=("$1"); }
-
-    # Helper: strip markdown bold (**text** → text) and links ([text](url) → text)
     _strip_md() { echo "$1" | sed 's/\*\*//g; s/\[\([^]]*\)\]([^)]*)/\1/g'; }
-
-    # Helper: resolve plan name to file path (plans/name.md or plans/name), empty if not found
-    _resolve_plan_file() {
-        local name="$1" base="$2"
-        if [[ -f "$base/plans/$name.md" ]]; then
-            echo "plans/$name.md"
-        elif [[ -f "$base/plans/$name" ]]; then
-            echo "plans/$name"
-        else
-            echo ""
-        fi
+    _parse_tracker_cells() {
+        printf '%s\n' "$1" | awk -F'|' '{
+            n=0; out=""
+            for(i=2; i<NF; i++) {
+                gsub(/^[ \t]+|[ \t]+$/, "", $i)
+                if(n>0) out=out"\t"
+                out=out $i; n++
+            }
+            if(n>0) print out; else exit 1
+        }'
     }
 
-    # Log which tracker path was used
-    [[ -n "$tracker_file" ]] && _report "- TRACKER.md found at: \`$tracker_file\`"
+    local tracker_copy=""
+    if [[ -n "$tracker_file" ]]; then
+        tracker_copy="$migrated/$(basename "$tracker_file")"
+        cp "$tracker_file" "$tracker_copy"
+        _report "- TRACKER.md found at: \`$tracker_file\`"
+    fi
+    [[ -d "$path/.hive" && ! -e "$migrated/.hive" ]] && cp -R "$path/.hive" "$migrated/.hive"
+    [[ -f "$path/plans/INBOX.md" && ! -e "$migrated/INBOX.md" ]] && cp "$path/plans/INBOX.md" "$migrated/INBOX.md"
+    [[ -f "$meta/SESSION_LOG.md" && ! -e "$migrated/SESSION_LOG.md" ]] && cp "$meta/SESSION_LOG.md" "$migrated/SESSION_LOG.md"
+    [[ -f "$meta/DEPENDENCIES.md" && ! -e "$migrated/DEPENDENCIES.md" ]] && cp "$meta/DEPENDENCIES.md" "$migrated/DEPENDENCIES.md"
 
-    # Migrate TRACKER.md → work.jsonl + archive.jsonl (transactional)
-    if [[ -n "$tracker_file" ]] && [[ ! -s "$meta/work.jsonl" ]]; then
+    local migrate_count=0 archive_count=0
+    local id_map='{}'
+
+    if [[ -n "$tracker_file" ]]; then
         local section=""
-        local migrate_count=0
-        local archive_count=0
-        local work_tmp="$meta/work.tmp.jsonl"
-        local archive_tmp="$meta/archive.tmp.jsonl"
-        touch "$work_tmp" "$archive_tmp"
-        # Clean up temp files on unexpected exit
-        trap 'rm -f "$work_tmp" "$archive_tmp"' EXIT
         while IFS= read -r line; do
-            # Track which section we're in
             [[ "$line" == *"## Active"* ]] && { section="active"; continue; }
             [[ "$line" == *"## Completed"* ]] && { section="completed"; continue; }
-            # Any other H2 ends the current section
             [[ "$line" == "## "* ]] && { section=""; continue; }
-            # Skip table headers, separators, sub-headers, blank lines, non-table lines
             [[ "$line" == "|--"* ]] && continue
-            [[ "$line" == "| Plan "* ]] && continue
+            [[ "$line" == "| Plan |"* ]] && continue
             [[ "$line" == "###"* ]] && continue
             [[ -z "$line" ]] && continue
             [[ "$line" != \|* ]] && continue
 
             if [[ "$section" == "active" ]]; then
-                local plan pts priority status assigned
-                plan=$(_strip_md "$(echo "$line" | awk -F'|' '{gsub(/^[ \t]+|[ \t]+$/, "", $2); print $2}')")
-                pts=$(echo "$line" | awk -F'|' '{gsub(/^[ \t]+|[ \t]+$/, "", $3); print $3}')
-                priority=$(_strip_md "$(echo "$line" | awk -F'|' '{gsub(/^[ \t]+|[ \t]+$/, "", $4); print $4}')")
-                status=$(_strip_md "$(echo "$line" | awk -F'|' '{gsub(/^[ \t]+|[ \t]+$/, "", $5); print $5}')")
-                assigned=$(_strip_md "$(echo "$line" | awk -F'|' '{gsub(/^[ \t]+|[ \t]+$/, "", $6); print $6}')")
-                [[ -z "$plan" ]] && continue
-
-                # Column count check: active table expects at least 5 data columns (B1)
-                local col_count
-                col_count=$(echo "$line" | awk -F'|' '{print NF}')
-                if [[ "$col_count" -lt 6 ]]; then
+                local plan status priority summary cells col_count old_id bd_priority new_id bd_status
+                cells=$(_parse_tracker_cells "$line") || {
                     _report "- Skipped unparseable row: $(echo "$line" | head -c 60)..."
                     continue
-                fi
-
-                # Sanitize points: must be integer, default 0
-                if [[ ! "$pts" =~ ^[0-9]+$ ]]; then
-                    _report "- \`$plan\`: points \`$pts\` not numeric, defaulted to 0"
-                    pts="0"
-                fi
-
-                # Normalize status: take first word, ignore trailing descriptions
-                status=$(echo "$status" | awk '{print tolower($1)}' | sed 's/^[ \t]*//;s/[ \t]*$//')
-                case "$status" in
-                    ready|working|blocked|done|archived) ;;
-                    near-complete)                status="working"; _report "- \`$plan\`: status \`near-complete\` → working" ;;
-                    in)                           status="working"; _report "- \`$plan\`: status \`IN PROGRESS\` → working" ;;
-                    pending)                      status="ready"; _report "- \`$plan\`: status \`pending\` → ready" ;;
-                    deferred)                     status="blocked"; _report "- \`$plan\`: status \`deferred\` → blocked" ;;
-                    complete|completed|finished)  status="done" ;;
-                    *)                            _report "- \`$plan\`: status \`$status\` unrecognized, defaulted to ready"; status="ready" ;;
-                esac
-
-                # Normalize priority
-                case "$(echo "$priority" | tr '[:upper:]' '[:lower:]')" in
-                    critical|crit) priority="HIGH" ;;
-                    high|hi)       priority="HIGH" ;;
-                    med|medium)    priority="Medium" ;;
-                    low|lo)        priority="Low" ;;
-                    ref|reference) priority="Low" ;;
-                    *)             priority="Medium" ;;
-                esac
-
-                # Normalize assigned: dash or empty → unassigned
-                [[ "$assigned" == "-" || -z "$assigned" ]] && assigned=""
-
-                local id
-                id="P-$(printf '%03d' $(($(wc -l < "$work_tmp" 2>/dev/null || echo 0) + 1)))"
-                local today
-                today=$(date +%Y-%m-%d)
-                local file_path
-                file_path=$(_resolve_plan_file "$plan" "$path")
-                [[ -z "$file_path" ]] && _report "- \`$plan\`: no matching plan file found in plans/"
-
-                jq -cn \
-                    --arg id "$id" --arg title "$plan" --arg file "$file_path" \
-                    --arg status "$status" --arg priority "$priority" \
-                    --argjson pts "$pts" --arg assigned "$assigned" \
-                    --arg today "$today" \
-                    '{id:$id,type:"plan",title:$title,file:$file,status:$status,priority:$priority,points:$pts,assigned:$assigned,parent:"",deliverable:"",created:$today,updated:$today}' \
-                    >> "$work_tmp"
-                migrate_count=$((migrate_count + 1))
-
-            elif [[ "$section" == "completed" ]]; then
-                local plan pts col4 col5
-                plan=$(_strip_md "$(echo "$line" | awk -F'|' '{gsub(/^[ \t]+|[ \t]+$/, "", $2); print $2}')")
-                pts=$(echo "$line" | awk -F'|' '{gsub(/^[ \t]+|[ \t]+$/, "", $3); print $3}')
-                col4=$(echo "$line" | awk -F'|' '{gsub(/^[ \t]+|[ \t]+$/, "", $4); print $4}')
-                col5=$(echo "$line" | awk -F'|' '{gsub(/^[ \t]+|[ \t]+$/, "", $5); print $5}')
-                [[ -z "$plan" ]] && continue
-
-                # Column count check: completed table expects at least 3 data columns (B1)
-                local col_count
-                col_count=$(echo "$line" | awk -F'|' '{print NF}')
+                }
+                col_count=$(printf '%s\n' "$cells" | awk -F'\t' '{print NF}')
                 if [[ "$col_count" -lt 4 ]]; then
                     _report "- Skipped unparseable row: $(echo "$line" | head -c 60)..."
                     continue
                 fi
 
-                if [[ ! "$pts" =~ ^[0-9]+$ ]]; then
-                    _report "- \`$plan\` (completed): points \`$pts\` not numeric, defaulted to 0"
-                    pts="0"
-                fi
+                plan=$(_strip_md "$(printf '%s\n' "$cells" | awk -F'\t' '{print $1}')")
+                status=$(_strip_md "$(printf '%s\n' "$cells" | awk -F'\t' '{print $2}')")
+                priority=$(_strip_md "$(printf '%s\n' "$cells" | awk -F'\t' '{print $3}')")
+                summary=$(_strip_md "$(printf '%s\n' "$cells" | awk -F'\t' '{print $4}')")
+                [[ -z "$plan" ]] && continue
 
-                # Detect table format: 4-col (Plan|Pts|Completed|Outcome) vs 3-col (Plan|Pts|Outcome)
-                # Exact YYYY-MM-DD match — partial dates like "2026-03 fix" won't match (C2)
-                local completed outcome
-                if [[ "$col4" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]]; then
-                    completed="$col4"
-                    outcome="$col5"
+                status=$(echo "$status" | awk '{print tolower($1)}' | sed 's/^[ 	]*//;s/[ 	]*$//')
+                case "$status" in
+                    ready|pending) bd_status="open" ;;
+                    working|near-complete|in) bd_status="in_progress" ;;
+                    blocked|deferred) bd_status="blocked" ;;
+                    done|archived|complete|completed|finished) bd_status="closed" ;;
+                    *) _report "- \`$plan\`: status \`$status\` unrecognized, defaulted to open"; bd_status="open" ;;
+                esac
+
+                case "$(echo "$priority" | tr '[:upper:]' '[:lower:]')" in
+                    critical|crit|high|hi) bd_priority=1 ;;
+                    medium|med|low|lo) bd_priority=2 ;;
+                    reference|ref) bd_priority=3 ;;
+                    *) bd_priority=2 ;;
+                esac
+
+                old_id="P-$(printf '%03d' $((migrate_count + archive_count + 1)))"
+                if [[ -n "$summary" && "$summary" != "-" ]]; then
+                    new_id=$(cd "$path" && bd create "$plan" --type epic -p "$bd_priority" --description "$summary" --json | jq -r '.id')
                 else
-                    completed=$(date +%Y-%m-%d)
-                    outcome="$col4"
+                    new_id=$(cd "$path" && bd create "$plan" --type epic -p "$bd_priority" --description "Migrated from TRACKER.md" --json | jq -r '.id')
                 fi
 
-                local id
-                id="P-$(printf '%03d' $(( \
-                    $(wc -l < "$work_tmp" 2>/dev/null || echo 0) + \
-                    $(wc -l < "$archive_tmp" 2>/dev/null || echo 0) + 1 \
-                )))"
-                local file_path
-                file_path=$(_resolve_plan_file "$plan" "$path")
-                [[ -z "$file_path" ]] && _report "- \`$plan\` (completed): no matching plan file found"
+                if [[ "$bd_status" == "closed" ]]; then
+                    (cd "$path" && bd close "$new_id" --reason "Migrated as done" --quiet) >/dev/null 2>&1 || true
+                elif [[ "$bd_status" == "in_progress" ]]; then
+                    (cd "$path" && bd update "$new_id" --status in_progress --quiet) >/dev/null 2>&1 || true
+                elif [[ "$bd_status" == "blocked" ]]; then
+                    (cd "$path" && bd update "$new_id" --status blocked --quiet) >/dev/null 2>&1 || true
+                fi
 
-                jq -cn \
-                    --arg id "$id" --arg title "$plan" --arg file "$file_path" \
-                    --argjson pts "$pts" --arg completed "$completed" \
-                    --arg outcome "$outcome" \
-                    '{id:$id,type:"plan",title:$title,file:$file,status:"done",priority:"Medium",points:$pts,assigned:"",parent:"",deliverable:$outcome,created:$completed,updated:$completed}' \
-                    >> "$archive_tmp"
+                id_map=$(echo "$id_map" | jq --arg old "$old_id" --arg new "$new_id" '. + {($old): $new}')
+                migrate_count=$((migrate_count + 1))
+            elif [[ "$section" == "completed" ]]; then
+                local plan summary cells old_id new_id
+                local col_count
+                cells=$(_parse_tracker_cells "$line") || {
+                    _report "- Skipped unparseable row: $(echo "$line" | head -c 60)..."
+                    continue
+                }
+                col_count=$(printf '%s\n' "$cells" | awk -F'\t' '{print NF}')
+                if [[ "$col_count" -lt 2 ]]; then
+                    _report "- Skipped unparseable row: $(echo "$line" | head -c 60)..."
+                    continue
+                fi
+
+                plan=$(_strip_md "$(printf '%s\n' "$cells" | awk -F'\t' '{print $1}')")
+                summary=$(_strip_md "$(printf '%s\n' "$cells" | awk -F'\t' '{print $2}')")
+                [[ -z "$plan" ]] && continue
+
+                old_id="P-$(printf '%03d' $((migrate_count + archive_count + 1)))"
+                if [[ -n "$summary" && "$summary" != "-" ]]; then
+                    new_id=$(cd "$path" && bd create "$plan" --type epic -p 3 --description "$summary" --json | jq -r '.id')
+                else
+                    new_id=$(cd "$path" && bd create "$plan" --type epic -p 3 --description "Migrated from archive" --json | jq -r '.id')
+                fi
+                (cd "$path" && bd close "$new_id" --reason "Archived (migrated)" --quiet) >/dev/null 2>&1 || true
+                id_map=$(echo "$id_map" | jq --arg old "$old_id" --arg new "$new_id" '. + {($old): $new}')
                 archive_count=$((archive_count + 1))
             fi
         done < "$tracker_file"
 
-        # Validate temp files before committing (every line must be valid JSON)
-        local validation_ok=true
-        if [[ -s "$work_tmp" ]]; then
-            while IFS= read -r jline; do
-                if ! echo "$jline" | jq empty 2>/dev/null; then
-                    validation_ok=false
-                    break
-                fi
-            done < "$work_tmp"
-        fi
-        if [[ -s "$archive_tmp" ]] && $validation_ok; then
-            while IFS= read -r jline; do
-                if ! echo "$jline" | jq empty 2>/dev/null; then
-                    validation_ok=false
-                    break
-                fi
-            done < "$archive_tmp"
-        fi
-
-        if $validation_ok; then
-            # Atomically commit migration
-            [[ -s "$work_tmp" ]] && mv "$work_tmp" "$meta/work.jsonl"
-            [[ -s "$archive_tmp" ]] && mv "$archive_tmp" "$meta/archive.jsonl"
-            rm -f "$work_tmp" "$archive_tmp"
-            info "  Migrated $migrate_count active → work.jsonl, $archive_count completed → archive.jsonl"
-            mv "$tracker_file" "$migrated/"
-        else
-            rm -f "$work_tmp" "$archive_tmp"
-            warn "Migration produced invalid JSON — no files modified. TRACKER.md preserved."
-            _report "- **MIGRATION FAILED**: generated JSONL failed validation"
-        fi
-        trap - EXIT
+        mv "$tracker_file" "$migrated/"
     fi
 
-    # Migrate .hive/bee-N.md → claims/bee-N.jsonl
     if [[ -d "$path/.hive" ]]; then
-        for status_file in "$path"/.hive/*.md; do
-            [[ ! -f "$status_file" ]] && continue
-            local agent_name
-            agent_name=$(basename "$status_file" .md)
-            local claim_file="$meta/claims/$agent_name.jsonl"
-
-            # Only migrate if claim file is empty
-            if [[ ! -s "$claim_file" ]]; then
-                local hive_status="" hive_plan=""
-                while IFS= read -r line; do
-                    [[ "$line" == "**Status:"* ]] && hive_status=$(echo "$line" | sed 's/\*\*Status:\*\*[[:space:]]*//')
-                    [[ "$line" == "**Plan:"* ]] && hive_plan=$(echo "$line" | sed 's/\*\*Plan:\*\*[[:space:]]*//')
-                done < "$status_file"
-
-                if [[ -n "$hive_plan" && "$hive_plan" != "None" && "$hive_plan" != "-" ]]; then
-                    local action="checkpoint"
-                    local lower_status
-                    lower_status=$(echo "$hive_status" | tr '[:upper:]' '[:lower:]')
-                    case "$lower_status" in
-                        working)  action="claim" ;;
-                        blocked)  action="blocked" ;;
-                        complete) action="complete" ;;
-                        ready)    action="checkpoint" ;;
-                    esac
-                    local ts
-                    ts=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-                    jq -cn --arg action "$action" --arg item "$hive_plan" --arg ts "$ts" \
-                        --arg note "Migrated from .hive/$agent_name.md" \
-                        '{action:$action,item_id:$item,ts:$ts,note:$note}' >> "$claim_file"
-                fi
-            fi
-        done
+        rm -rf "$migrated/.hive" 2>/dev/null || true
         mv "$path/.hive" "$migrated/"
     fi
-
-    # Migrate INBOX.md → inbox.jsonl
-    if [[ -f "$path/plans/INBOX.md" ]] && [[ ! -s "$meta/inbox.jsonl" ]]; then
-        # Simple migration: just move the file, Queen will process new reports via JSONL
-        mv "$path/plans/INBOX.md" "$migrated/"
-    fi
-
-    # Migrate SESSION_LOG.md → sessions.jsonl
-    if [[ -f "$meta/SESSION_LOG.md" ]] && [[ ! -s "$meta/sessions.jsonl" ]]; then
-        mv "$meta/SESSION_LOG.md" "$migrated/"
-    fi
-
-    # Move DEPENDENCIES.md if present
+    [[ -f "$path/plans/INBOX.md" ]] && mv "$path/plans/INBOX.md" "$migrated/"
+    [[ -f "$meta/SESSION_LOG.md" ]] && mv "$meta/SESSION_LOG.md" "$migrated/"
     [[ -f "$meta/DEPENDENCIES.md" ]] && mv "$meta/DEPENDENCIES.md" "$migrated/"
 
-    # Write migration report
+    echo "$id_map" | jq '.' > "$migrated/id-mapping.json"
+
     {
         echo "# Migration Report"
         echo ""
         echo "**Date:** $(date +%Y-%m-%d)"
         echo "**Beehive version:** v$VERSION"
-        echo "**Source:** markdown (TRACKER.md, .hive/, INBOX.md, etc.)"
-        echo "**Target:** JSONL (work.jsonl, claims/, inbox.jsonl, etc.)"
+        echo "**Source:** markdown tracker files"
+        echo "**Target:** beads issues"
         echo ""
         echo "## Summary"
         echo ""
-        echo "- Active work items migrated to work.jsonl: ${migrate_count:-0}"
-        echo "- Completed items migrated to archive.jsonl: ${archive_count:-0}"
+        echo "- Active work items migrated to beads: $migrate_count"
+        echo "- Completed items migrated to beads: $archive_count"
         echo "- Original files preserved in: \`plans/_meta/migrated/\`"
+        echo "- relationships not imported from TRACKER.md"
         echo ""
         if [[ ${#report_lines[@]} -gt 0 ]]; then
             echo "## Fallbacks and Warnings"
@@ -872,34 +798,19 @@ _migrate_markdown() {
         done
     } > "$migrated/migration-report.md"
 
-    success "  Migrated old files to plans/_meta/migrated/"
+    success "  Migrated legacy tracking files to beads"
+    info "  ID mapping: plans/_meta/migrated/id-mapping.json"
     info "  Migration report: plans/_meta/migrated/migration-report.md"
 }
 
 #######################################
-# Status display (JSONL only)
+# Status display (beads-backed)
 #######################################
-
-# Helper: get last non-empty valid JSON line from a file
-# Usage: last=$(_last_valid_json "$file")
-_last_valid_json() {
-    local file="$1"
-    local last_valid=""
-    while IFS= read -r line; do
-        [[ -z "$line" ]] && continue
-        if echo "$line" | jq empty 2>/dev/null; then
-            last_valid="$line"
-        fi
-    done < "$file"
-    [[ -n "$last_valid" ]] && echo "$last_valid"
-}
-
 do_status() {
     local path="$1"
-    local meta="$path/plans/_meta"
 
     [[ ! -d "$path/plans" ]] && die "Not initialized. Run: beehive --init $path"
-    [[ ! -f "$meta/work.jsonl" ]] && die "No JSONL files. Run: beehive --upgrade $path"
+    [[ ! -d "$path/.beads" ]] && die "Beads not initialized. Run: beehive --init $path"
 
     if $JSON_OUTPUT; then
         _do_status_json "$path"
@@ -910,281 +821,137 @@ do_status() {
 
 _do_status_json() {
     local path="$1"
-    local meta="$path/plans/_meta"
-    local has_errors=false
 
-    # Collect work items (skip malformed)
-    local work_items="[]"
-    if [[ -s "$meta/work.jsonl" ]]; then
-        work_items=$(jq -R -s '[split("\n") | .[] | select(length > 0) | fromjson? // empty]' "$meta/work.jsonl" 2>/dev/null || echo "[]")
-        # Check for malformed lines
-        local total_lines valid_count
-        total_lines=$(wc -l < "$meta/work.jsonl" | tr -d ' ')
-        valid_count=$(echo "$work_items" | jq 'length')
-        [[ "$total_lines" -ne "$valid_count" ]] && has_errors=true
-    fi
+    # Get all issues from beads
+    local all_issues
+    all_issues=$(cd "$path" && bd list --json --all 2>/dev/null || echo "[]")
 
-    # Collect agent states (latest entry per agent)
-    local agents="[]"
-    local agent_entries=()
-    for claim_file in "$meta"/claims/*.jsonl; do
-        [[ ! -f "$claim_file" ]] && continue
-        local agent
-        agent=$(basename "$claim_file" .jsonl)
-        if [[ ! -s "$claim_file" ]]; then
-            agent_entries+=("$(jq -cn --arg a "$agent" '{agent:$a,status:"idle"}')")
-            continue
-        fi
-        local last
-        last=$(_last_valid_json "$claim_file")
-        if [[ -n "$last" ]] && echo "$last" | jq empty 2>/dev/null; then
-            agent_entries+=("$(echo "$last" | jq -c --arg a "$agent" '{agent:$a} + .')")
-        else
-            agent_entries+=("$(jq -cn --arg a "$agent" '{agent:$a,status:"malformed"}')")
-            has_errors=true
-        fi
-    done
-    if [[ ${#agent_entries[@]} -gt 0 ]]; then
-        agents=$(printf '%s\n' "${agent_entries[@]}" | jq -s '.')
-    fi
+    local ready_issues
+    ready_issues=$(cd "$path" && bd ready --json 2>/dev/null || echo "[]")
 
-    # Collect inbox
-    local inbox="[]"
-    if [[ -s "$meta/inbox.jsonl" ]]; then
-        inbox=$(jq -R -s '[split("\n") | .[] | select(length > 0) | fromjson? // empty | select(.status == "pending")]' "$meta/inbox.jsonl" 2>/dev/null || echo "[]")
-    fi
+    # Build agents list from assignee field
+    local agents
+    agents=$(echo "$all_issues" | jq '[.[] | select(.assignee != null and .assignee != "") | {agent: .assignee, status: .status, item_id: .id, title: .title}] | group_by(.agent) | map({agent: .[0].agent, items: .})')
 
     # Output combined JSON
     jq -cn \
         --arg project "$(basename "$path")" \
-        --argjson work "$work_items" \
+        --argjson issues "$all_issues" \
+        --argjson ready "$ready_issues" \
         --argjson agents "$agents" \
-        --argjson inbox "$inbox" \
-        --argjson errors "$has_errors" \
-        '{project:$project,work_items:$work,agents:$agents,inbox:$inbox,has_errors:$errors}'
-
-    $has_errors && return 1
-    return 0
+        '{project:$project, issues:$issues, ready:$ready, agents:$agents}'
 }
 
 _do_status_human() {
     local path="$1"
-    local meta="$path/plans/_meta"
 
     echo ""
     echo -e "${GREEN}Beehive Status${NC} — $(basename "$path")"
 
-    # Work items
+    # All open issues
     echo ""
     echo -e "${CYAN}  Work Items${NC}"
-    if [[ -s "$meta/work.jsonl" ]]; then
-        local line_num=0
-        while IFS= read -r line; do
-            line_num=$((line_num + 1))
-            if ! echo "$line" | jq empty 2>/dev/null; then
-                echo -e "  ${RED}⚠ work.jsonl:$line_num malformed${NC}"
-                continue
-            fi
-            local icon
-            case $(echo "$line" | jq -r '.status') in
-                ready) icon="○" ;; working) icon="●" ;; blocked) icon="✕" ;; *) icon="·" ;;
-            esac
-            echo "$line" | jq -r --arg i "$icon" '"\("  " + $i + " " + .id + " " + .status + " " + .priority + " " + .title + (if .assigned != "" then " [" + .assigned + "]" else "" end))"'
-        done < "$meta/work.jsonl"
-    else
+    local issues
+    issues=$(cd "$path" && bd list --json 2>/dev/null || echo "[]")
+    local count
+    count=$(echo "$issues" | jq 'length')
+
+    if [[ "$count" -eq 0 ]]; then
         echo "  (none)"
+    else
+        echo "$issues" | jq -r '.[] | "  \(if .status == "open" then "○" elif .status == "in_progress" then "●" elif .status == "blocked" then "✕" else "·" end) \(.id) \(.status) P\(.priority) \(.title)\(if .assignee != null and .assignee != "" then " [\(.assignee)]" else "" end)"'
     fi
 
-    # Agent states
+    # Agent assignments
     echo ""
     echo -e "${CYAN}  Agents${NC}"
-    for claim_file in "$meta"/claims/*.jsonl; do
-        [[ ! -f "$claim_file" ]] && continue
-        local agent
-        agent=$(basename "$claim_file" .jsonl)
-        if [[ ! -s "$claim_file" ]]; then
-            printf "  %-10s (idle)\n" "$agent"
-            continue
-        fi
-        local last
-        last=$(_last_valid_json "$claim_file")
-        if [[ -z "$last" ]]; then
-            printf "  %-10s ${RED}⚠ malformed${NC}\n" "$agent"
-            continue
-        fi
-        echo "$last" | jq -r --arg a "$agent" '"\("  " + $a + " " + .action + " " + .item_id + " " + .ts)"'
-    done
+    local assigned
+    assigned=$(echo "$issues" | jq -r '.[] | select(.assignee != null and .assignee != "") | "\(.assignee)\t\(.status)\t\(.id)\t\(.title)"' 2>/dev/null)
+    if [[ -z "$assigned" ]]; then
+        echo "  (no active assignments)"
+    else
+        echo "$assigned" | while IFS=$'\t' read -r agent status item_id title; do
+            printf "  %-10s %s %s %s\n" "$agent" "$status" "$item_id" "$title"
+        done
+    fi
 
-    # Inbox (line-by-line to handle malformed entries)
-    if [[ -s "$meta/inbox.jsonl" ]]; then
-        local pending=0
-        local pending_lines=()
-        local malformed_inbox=0
-        while IFS= read -r inbox_line; do
-            [[ -z "$inbox_line" ]] && continue
-            if ! echo "$inbox_line" | jq empty 2>/dev/null; then
-                malformed_inbox=$((malformed_inbox + 1))
-                continue
-            fi
-            local inbox_status
-            inbox_status=$(echo "$inbox_line" | jq -r '.status // empty')
-            if [[ "$inbox_status" == "pending" ]]; then
-                pending=$((pending + 1))
-                pending_lines+=("$(echo "$inbox_line" | jq -r '"  • [\(.urgency)] \(.issue) — \(.from)"' 2>/dev/null)")
-            fi
-        done < "$meta/inbox.jsonl"
-        if [[ "$pending" -gt 0 ]]; then
-            echo ""
-            echo -e "${CYAN}  Inbox${NC} ($pending pending)"
-            for pl in "${pending_lines[@]}"; do
-                echo "$pl"
-            done
-        fi
-        if [[ "$malformed_inbox" -gt 0 ]]; then
-            echo ""
-            echo -e "  ${YELLOW}⚠ inbox.jsonl: $malformed_inbox malformed line(s) skipped${NC}"
-        fi
+    # Ready work (unblocked, unassigned)
+    echo ""
+    echo -e "${CYAN}  Ready${NC}"
+    local ready
+    ready=$(cd "$path" && bd ready --json 2>/dev/null || echo "[]")
+    local ready_count
+    ready_count=$(echo "$ready" | jq 'length')
+    if [[ "$ready_count" -eq 0 ]]; then
+        echo "  (none — all work assigned or blocked)"
+    else
+        echo "$ready" | jq -r '.[] | "  ◎ \(.id) P\(.priority) \(.title)"'
     fi
 
     echo ""
 }
 
 #######################################
-# Validate JSONL state files
+# Validate project health
 #######################################
 do_validate() {
     local path="$1"
-    local meta="$path/plans/_meta"
     local errors=0
-    local checked=0
 
     [[ ! -d "$path/plans" ]] && die "Not initialized. Run: beehive --init $path"
-    [[ ! -f "$meta/work.jsonl" ]] && die "No JSONL files. Run: beehive --upgrade $path"
+    [[ ! -d "$path/.beads" ]] && die "Beads not initialized. Run: beehive --init $path"
 
     echo ""
     echo -e "${GREEN}Beehive Validate${NC} — $(basename "$path")"
     echo ""
 
-    # Validate a JSONL file with required fields
-    _validate_jsonl() {
-        local file="$1" label="$2"
-        shift 2
-        local required_fields=("$@")
+    # Check bd health
+    local doctor_output doctor_status=0
+    if ! doctor_output=$(cd "$path" && bd list --json --all >/dev/null 2>&1 && bd doctor 2>&1); then
+        doctor_status=$?
+    fi
+    if [[ $doctor_status -eq 0 ]]; then
+        echo -e "  ${GREEN}✓${NC} bd doctor: healthy"
+    else
+        echo -e "  ${RED}✕${NC} bd doctor: issues found"
+        echo "$doctor_output" | sed 's/^/    /'
+        errors=$((errors + 1))
+    fi
+
+    # Validate sessions.jsonl if present
+    local meta="$path/plans/_meta"
+    if [[ -s "$meta/sessions.jsonl" ]]; then
         local line_num=0
-        local file_errors=0
-
-        if [[ ! -f "$file" ]]; then
-            echo -e "  ${YELLOW}⚠ $label: file missing${NC}"
-            return 0
-        fi
-
-        if [[ ! -s "$file" ]]; then
-            echo -e "  ${GREEN}✓${NC} $label: empty (OK)"
-            checked=$((checked + 1))
-            return 0
-        fi
-
+        local sess_errors=0
         while IFS= read -r line; do
             line_num=$((line_num + 1))
             [[ -z "$line" ]] && continue
-
             if ! echo "$line" | jq empty 2>/dev/null; then
-                echo -e "  ${RED}✕${NC} $label:$line_num — invalid JSON"
-                file_errors=$((file_errors + 1))
-                continue
+                echo -e "  ${RED}✕${NC} sessions.jsonl:$line_num — invalid JSON"
+                sess_errors=$((sess_errors + 1))
             fi
-
-            for field in "${required_fields[@]}"; do
-                local val
-                val=$(echo "$line" | jq -r --arg f "$field" '.[$f] // empty')
-                if [[ -z "$val" ]]; then
-                    echo -e "  ${RED}✕${NC} $label:$line_num — missing field: $field"
-                    file_errors=$((file_errors + 1))
-                fi
-            done
-
-        done < "$file"
-
-        checked=$((checked + 1))
-        if [[ $file_errors -eq 0 ]]; then
-            echo -e "  ${GREEN}✓${NC} $label: $line_num lines OK"
+        done < "$meta/sessions.jsonl"
+        if [[ "$sess_errors" -eq 0 ]]; then
+            echo -e "  ${GREEN}✓${NC} sessions.jsonl: $line_num lines OK"
         else
-            echo -e "  ${RED}✕${NC} $label: $file_errors errors in $line_num lines"
-            errors=$((errors + file_errors))
+            errors=$((errors + sess_errors))
         fi
-    }
-
-    # Validate work.jsonl — required: id, type, title, status
-    _validate_jsonl "$meta/work.jsonl" "work.jsonl" "id" "type" "title" "status"
-
-    # Validate archive.jsonl — required: id, type, title, status
-    _validate_jsonl "$meta/archive.jsonl" "archive.jsonl" "id" "type" "title" "status"
-
-    # Validate inbox.jsonl — required: from, issue, status
-    _validate_jsonl "$meta/inbox.jsonl" "inbox.jsonl" "from" "issue" "status"
-
-    # Validate sessions.jsonl — required: ts
-    _validate_jsonl "$meta/sessions.jsonl" "sessions.jsonl" "ts"
-
-    # Validate claims files — required: action, item_id, ts
-    for claim_file in "$meta"/claims/*.jsonl; do
-        [[ ! -f "$claim_file" ]] && continue
-        local label="claims/$(basename "$claim_file")"
-        _validate_jsonl "$claim_file" "$label" "action" "item_id" "ts"
-    done
-
-    # Validate work.jsonl status values (skip malformed lines — already reported above)
-    if [[ -s "$meta/work.jsonl" ]]; then
-        local bad_statuses
-        bad_statuses=$(jq -R -r 'fromjson? | .status // empty' "$meta/work.jsonl" 2>/dev/null | grep -cvE '^(ready|working|blocked|done|archived)$' || true)
-        if [[ "$bad_statuses" -gt 0 ]]; then
-            echo -e "  ${RED}✕${NC} work.jsonl: $bad_statuses entries with invalid status (expected: ready/working/blocked/done/archived)"
-            errors=$((errors + bad_statuses))
-        fi
+    else
+        echo -e "  ${GREEN}✓${NC} sessions.jsonl: empty (OK)"
     fi
 
-    # Validate claims action values (skip malformed lines)
-    for claim_file in "$meta"/claims/*.jsonl; do
-        [[ ! -f "$claim_file" || ! -s "$claim_file" ]] && continue
-        local label="claims/$(basename "$claim_file")"
-        local bad_actions
-        bad_actions=$(jq -R -r 'fromjson? | .action // empty' "$claim_file" 2>/dev/null | grep -cvE '^(claim|progress|blocked|complete|checkpoint)$' || true)
-        if [[ "$bad_actions" -gt 0 ]]; then
-            echo -e "  ${RED}✕${NC} $label: $bad_actions entries with invalid action (expected: claim/progress/blocked/complete/checkpoint)"
-            errors=$((errors + bad_actions))
-        fi
-    done
-
-    # Cross-reference: work items with status=working should have an active claim
-    # Check latest action for each item_id (not just any historical claim)
-    if [[ -s "$meta/work.jsonl" ]]; then
-        local working_items
-        working_items=$(jq -R -r 'fromjson? | select(.status == "working") | .id' "$meta/work.jsonl" 2>/dev/null)
-        if [[ -n "$working_items" ]]; then
-            while IFS= read -r item_id; do
-                local has_active_claim=false
-                for claim_file in "$meta"/claims/*.jsonl; do
-                    [[ ! -f "$claim_file" || ! -s "$claim_file" ]] && continue
-                    local latest_action
-                    latest_action=$(jq -R -r "fromjson? | select(.item_id == \"$item_id\") | .action" "$claim_file" 2>/dev/null | tail -1)
-                    if [[ "$latest_action" == "claim" || "$latest_action" == "progress" || "$latest_action" == "blocked" ]]; then
-                        has_active_claim=true
-                        break
-                    fi
-                done
-                if ! $has_active_claim; then
-                    echo -e "  ${YELLOW}⚠${NC} work.jsonl: $item_id has status=working but no agent has an active claim (latest action is not claim/progress/blocked)"
-                fi
-            done <<< "$working_items"
-        fi
-    fi
+    # Check issue counts
+    local open_count closed_count
+    open_count=$(cd "$path" && bd list --json 2>/dev/null | jq 'length')
+    closed_count=$(cd "$path" && bd list --json --all 2>/dev/null | jq '[.[] | select(.status == "closed")] | length')
+    echo -e "  ${GREEN}✓${NC} issues: $open_count open, $closed_count closed"
 
     echo ""
     if [[ $errors -eq 0 ]]; then
-        success "✓ Validation passed ($checked files checked, 0 errors)"
+        success "✓ Validation passed (0 errors)"
         return 0
     else
-        echo -e "${RED}✕ Validation failed ($checked files checked, $errors errors)${NC}"
+        echo -e "${RED}✕ Validation failed ($errors errors)${NC}"
         return 1
     fi
 }
@@ -1198,8 +965,8 @@ Commands:
     beehive [path]              Launch agents (default: current directory)
     beehive --init [path]       Initialize repo/workspace structure
     beehive --upgrade [path]    Upgrade skills, commands, and template (preserves data)
-    beehive --status [path]     Show work items, agent states, and inbox
-    beehive --validate [path]   Validate JSONL state files for schema correctness
+    beehive --status [path]     Show work items, agent states, and ready queue
+    beehive --validate [path]   Validate beads health and sessions.jsonl
 
 Options:
     --session NAME       Session name (default: folder name)
@@ -1224,7 +991,7 @@ Examples:
     beehive --upgrade            # Upgrade skills/commands/template to latest
     beehive --upgrade --dry-run  # Preview what upgrade would change
     beehive --status --json      # Machine-readable status for CI/scripts
-    beehive --validate           # Check JSONL files for errors
+    beehive --validate           # Check beads health and sessions metadata
     beehive --base-url http://localhost:8090 --api-key sk-ant-xxx --yes
     beehive --queen-model claude-opus-4-6 --bee-model claude-sonnet-4-6
     beehive --bees 5                 # Launch 5 bees + Queen (6 agents total)
@@ -1277,6 +1044,7 @@ main() {
 
     # Require jq for all commands (--help/--version exit above before reaching here)
     require_jq
+    require_bd
 
     path="${path:-$(pwd)}"
     [[ ! -d "$path" ]] && die "Directory not found: $path"

@@ -9,38 +9,46 @@ Check yourself. Check your plan. If you're Queen, check the hive.
    - Check off completed tasks, remove irrelevant ones, add discovered sub-tasks
    - Update Session State (timestamp, current task, next step, context notes)
    - Update Technical Context with new learnings
-   - Update Risks / Open Questions
-3. **Append a `progress` entry** to your `claims/{role}.jsonl`
+3. **Add a progress comment** to your beads issue:
+   ```bash
+   bd comments add <id> "Tasks 1-3 done. Working on task 4."
+   ```
 4. **Report discoveries** — Any out-of-scope work? Run `/report` first.
 
 ### If you're done with the work item:
 
-5. **Verify Done Criteria** (plans) or `done_when` (tasks) — Is EACH one satisfied?
+5. **Verify Done Criteria** (plans) or acceptance criteria (tasks) — Is EACH one satisfied?
    - If NO: get back to work
    - If YES: continue
-6. **Append a `complete` entry** to your `claims/{role}.jsonl` with summary
+6. **Close the issue**: `bd close <id> --reason "All done criteria met"`
 7. **Shut down teammates** — If you spawned an Agent Team, shut them all down. Verify their work.
-8. **Tell Queen** — "[item_id] complete" with 1-sentence summary
+8. **Tell Queen** — "[id] complete" with 1-sentence summary
 
-**Bees: Do NOT edit work.jsonl.** If you're a Bee, you're done here.
+**Bees: you're done here after closing your issue.**
 
 ---
 
 ## Queen Only — Hive Coordination
 
-9. **Consolidate status** — Read `claims/*.jsonl` for all agents
-    - Update `work.jsonl` assigned/status to match agent claim states
-    - Check for stale claims (last entry > 24h with no progress)
-    - Move `"status":"done"` items from work.jsonl to archive.jsonl
-10. **Process inbox** — Read `inbox.jsonl` for `"status":"pending"` entries
-    - For each: APPROVE (create work item) | REJECT | DEFER | DUPLICATE
-    - Update the inbox entry's status and resolution fields
-11. **Review work.jsonl** — Any inconsistencies?
-    - Items showing `"status":"ready"` but already claimed?
-    - Items showing `"status":"working"` but agent shows complete?
+9. **Check agent progress:**
+   ```bash
+   bd list --status in_progress         # See what's being worked on
+   bd blocked                           # Check for blocked issues
+   ```
+   - Check for stale work (no progress comments in >24h)
+   - Check for issues stuck in `in_progress` with no recent activity
+10. **Triage ready work:**
+    ```bash
+    bd ready                            # Unblocked, unassigned work
+    bd list --no-assignee               # All unassigned issues
+    ```
+    - Assign to agents or flag for beekeeper
+11. **Review overall state** — Any inconsistencies?
+    - Issues in `in_progress` but agent not actually working?
+    - Duplicate or overlapping work?
 12. **Summarize** — Report: active work, ready items, blockers
 
-If running /buzz mid-task: append a `progress` note first, do coordination, then resume.
+If running /buzz mid-task: add a progress comment first, do coordination, then resume.
 
 ---
 
@@ -49,7 +57,6 @@ If running /buzz mid-task: append a `progress` note first, do coordination, then
 - Tasks (checkboxes, add/remove)
 - Session State
 - Technical Context
-- Risks / Open Questions
 
 ## Never edit during /buzz
 

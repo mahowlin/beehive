@@ -8,5 +8,5 @@ Templates and reference docs. Used by `beehive --init`.
 |------|---------|
 | `plan.md` | Plan template (copied to `plans/TEMPLATE.md`) |
 | `example-plan.md` | Example plan showing structure |
-| `schemas.md` | JSONL schema reference for agents |
+| `master-plan.md` | Template for grouped deliverables and plan registry |
 | `gitignore` | Default .gitignore entries |

@@ -14,12 +14,12 @@ Perform these steps:
    - Update **Session State**: current task, next step, context notes, timestamp
    - Prune stale data from Technical Context / Notes
 
-2. **Append a `checkpoint` entry** to your `claims/{role}.jsonl`:
-   ```json
-   {"action":"checkpoint","item_id":"P-001","ts":"2026-01-21T14:30:00Z","note":"Tasks 1-3 done. On task 4: JWT validation. Next: token refresh in auth.ts:45"}
+2. **Add a checkpoint comment** to your beads issue:
+   ```bash
+   bd comments add <id> "Checkpoint: Tasks 1-3 done. On task 4: JWT validation. Next: token refresh in auth.ts:45"
    ```
 
-3. **If mid-task**, include in the note:
+3. **If mid-task**, include in the comment:
    - What you were working on
    - Next step to resume
    - Any context that would help you (or another agent) pick up later

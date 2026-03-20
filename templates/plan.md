@@ -1,4 +1,4 @@
-<!-- PLAN-META id="" parent="" deliverable="" created="" -->
+<!-- PLAN-META id="" parent="" created="" -->
 # [Plan Name]
 
 **Priority:** HIGH | Medium | Low

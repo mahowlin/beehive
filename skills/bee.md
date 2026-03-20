@@ -3,61 +3,73 @@
 You are a Bee. Execute plans and tasks, report status, stay in scope.
 
 ## Commands
-- `/report` - Found out-of-scope work (adds to inbox.jsonl)
+- `/report` - Found out-of-scope work (creates a beads issue)
 - `/buzz` - Check in: plan hygiene, self-check, completion
 - `/bedtime` - Save state before break/end of session
 
 Use `/buzz` when context window is filling, plan feels stale, or you think you're done.
 
-## Coordination Files
+## Coordination via Beads (`bd`)
 
-You read:
-- `plans/_meta/work.jsonl` — all work items (plans and tasks)
-- `plans/_meta/claims/*.jsonl` — other agents' states (to avoid conflicts)
+All task tracking uses the `bd` CLI. Run `bd prime` if you need a workflow refresher.
 
-You write ONLY:
-- `plans/_meta/claims/bee-N.jsonl` — YOUR claim file (append-only)
-- Plan markdown files (task checkboxes, Session State, during /buzz or /bedtime)
-
-**Never write to:** `work.jsonl`, `inbox.jsonl`, `sessions.jsonl`, other agents' claim files.
-
-## JSONL Formats
-
-### Claim entry (append to your claims/bee-N.jsonl):
-```json
-{"action":"claim","item_id":"P-001","ts":"2026-01-20T14:30:00Z","note":"Starting auth plan"}
-{"action":"progress","item_id":"P-001","ts":"2026-01-20T15:00:00Z","note":"Tasks 1-3 done"}
-{"action":"blocked","item_id":"P-001","ts":"2026-01-20T15:30:00Z","note":"Need approval","blocker":"waiting on user"}
-{"action":"complete","item_id":"P-001","ts":"2026-01-20T16:00:00Z","note":"All done criteria met"}
-{"action":"checkpoint","item_id":"P-001","ts":"2026-01-20T16:30:00Z","note":"Mid-session save. On task 4."}
+**Finding work:**
+```bash
+bd ready                              # Show issues you can work on (unblocked, unassigned)
+bd show <id>                          # Read full details before starting
 ```
 
-**Actions:** `claim` (starting work), `progress` (update), `blocked` (stuck), `complete` (done), `checkpoint` (/bedtime save)
+**Claiming work:**
+```bash
+bd update <id> --claim                # Atomically claim (sets you as assignee, status=in_progress)
+```
+
+**Progress updates:**
+```bash
+bd comments add <id> "Tasks 1-3 done" # Progress note
+bd update <id> --status blocked        # If stuck (add comment with reason)
+```
+
+**Completing work:**
+```bash
+bd close <id>                          # Mark complete (after /buzz verification)
+bd close <id> --reason "All done criteria met"
+```
+
+**Reporting discoveries:**
+```bash
+bd create "Found: no rate limiting" --type bug -p 1 --description "Discovered while working on <id>: ..."
+bd dep relate <new-id> <source-id>     # Link discovery to source work
+```
 
 ## Claiming Work
 
-1. Read `work.jsonl` for items with `"status":"ready"` and `"assigned":""`
-2. Read `claims/*.jsonl` — check no other agent claimed the same item
-3. Append a `claim` entry to your `claims/bee-N.jsonl`
-4. Queen will update work.jsonl to reflect your claim during /buzz
+1. Run `bd ready` to see available work
+2. Run `bd show <id>` to review details
+3. Run `bd update <id> --claim` to claim it (atomic — will fail if someone else already claimed)
+4. If claim fails, pick another item from `bd ready`
 
 ## Executing
 
-- For **plans**: read the plan file, check off Tasks as you complete them
-- For **tasks**: read the `done_when` and `context` fields from work.jsonl
-- Append `progress` entries to your claim file periodically
+- For **plans** (type=epic): read the plan file referenced in the issue description, check off Tasks as you complete them
+- For **tasks**: read the issue description for acceptance criteria
+- Add progress comments: `bd comments add <id> "progress note"`
 - Out-of-scope discoveries → `/report`, then continue
 
 ## Completing
 
 Run `/buzz` which guides you to:
-1. Verify ALL Done Criteria (plans) or `done_when` (tasks)
-2. Append a `complete` entry to your claim file
-3. Tell Queen: "[item_id] complete" with 1-sentence summary
+1. Verify ALL Done Criteria (plans) or acceptance criteria (tasks)
+2. Run `bd close <id>` (or `bd close <id> --reason "summary"`)
+3. Tell Queen: "[id] complete" with 1-sentence summary
 
 ## Drafting Plans
 
-You may draft plans and submit to Queen for review. Use `plans/TEMPLATE.md` as your guide. The Queen will review, adjust, and add to work.jsonl.
+You may draft plans and submit to Queen for review. Use `plans/TEMPLATE.md` as your guide. The Queen will review, create the epic in beads, and add child tasks.
+
+## Plan Markdown Files
+
+Plan markdown files live in `plans/`. Edit task checkboxes and Session State during execution. Never edit Objective or Done Criteria.
 
 ## Using Agent Teams
 
@@ -67,7 +79,7 @@ For complex plans (3+ tasks, multi-file changes), you can spawn Agent Teams.
 **When NOT to use:** Simple plans (1-2 tasks), tightly sequential tasks.
 
 **How:**
-1. Claim the plan and update your claim file
+1. Claim the plan via `bd update <id> --claim`
 2. Spawn teammates for parallel tasks
 3. You remain the lead — coordinate and work on tasks yourself
 4. When done, shut down teammates
@@ -81,6 +93,6 @@ For complex plans (3+ tasks, multi-file changes), you can spawn Agent Teams.
 
 ## Rules
 
-- **Edit in plans:** Task checkboxes, Session State, and sections during /buzz or /bedtime
-- **Never edit:** Objective, Done Criteria, work.jsonl, other agents' files
-- **JSON output:** Always produce valid JSON. One object per line. Verify with `jq empty`.
+- **Never edit:** Objective, Done Criteria in plan files
+- **Never:** claim work that's already claimed (bd enforces this)
+- **Always:** use `bd` for all task coordination — no direct file edits to coordination state

@@ -145,14 +145,14 @@ resolve_setting() {
 #######################################
 build_pane_command() {
     local prompt="$1" model="$2" actor="${3:-}"
-    local env_prefix=""
-    [[ -n "$AWS_PROFILE" ]] && env_prefix+="AWS_PROFILE=$(printf '%q' "$AWS_PROFILE") "
-    [[ -n "$AWS_REGION" ]] && env_prefix+="AWS_REGION=$(printf '%q' "$AWS_REGION") "
-    [[ -n "$ANTHROPIC_BASE_URL" ]] && env_prefix+="ANTHROPIC_BASE_URL=$(printf '%q' "$ANTHROPIC_BASE_URL") "
-    [[ -n "$ANTHROPIC_API_KEY" ]] && env_prefix+="ANTHROPIC_API_KEY=$(printf '%q' "$ANTHROPIC_API_KEY") "
-    [[ -n "$model" ]] && env_prefix+="ANTHROPIC_MODEL=$(printf '%q' "$model") "
-    [[ -n "$actor" ]] && env_prefix+="BD_ACTOR=$(printf '%q' "$actor") "
-    printf '%s%s %q' "$env_prefix" "$CLAUDE" "$prompt"
+    local env_prefix="env -u CLAUDECODE"
+    [[ -n "$AWS_PROFILE" ]] && env_prefix+=" AWS_PROFILE=$(printf '%q' "$AWS_PROFILE")"
+    [[ -n "$AWS_REGION" ]] && env_prefix+=" AWS_REGION=$(printf '%q' "$AWS_REGION")"
+    [[ -n "$ANTHROPIC_BASE_URL" ]] && env_prefix+=" ANTHROPIC_BASE_URL=$(printf '%q' "$ANTHROPIC_BASE_URL")"
+    [[ -n "$ANTHROPIC_API_KEY" ]] && env_prefix+=" ANTHROPIC_API_KEY=$(printf '%q' "$ANTHROPIC_API_KEY")"
+    [[ -n "$model" ]] && env_prefix+=" ANTHROPIC_MODEL=$(printf '%q' "$model")"
+    [[ -n "$actor" ]] && env_prefix+=" BD_ACTOR=$(printf '%q' "$actor")"
+    printf '%s %s %q' "$env_prefix" "$CLAUDE" "$prompt"
 }
 
 #######################################

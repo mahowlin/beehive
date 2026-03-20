@@ -9,3 +9,7 @@
 gas-town.txt
 FEEDBACK.md
 plans/
+
+# Dolt database files (added by bd init)
+.dolt/
+*.db

@@ -17,7 +17,7 @@
 
 set -e
 
-VERSION="0.5.0"
+VERSION="0.5.1"
 
 # Resolve symlinks to find actual script location (portable for Linux/macOS)
 SCRIPT_SOURCE="${BASH_SOURCE[0]}"

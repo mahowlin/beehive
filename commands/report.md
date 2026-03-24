@@ -8,7 +8,7 @@ Create a beads issue for the discovery:
 bd create "Login page has no rate limiting" \
   --type bug \
   -p 1 \
-  --description "Discovered while working on <current-id>: POST /login has no rate limiting. Should add rate limiting middleware."
+  --description "Discovered while working on <current-id>: POST /login lacks rate limiting."
 ```
 
 Then link it to your current work:
@@ -16,10 +16,11 @@ Then link it to your current work:
 bd dep relate <new-id> <current-id>
 ```
 
-**Fields to include in the description:**
-- What you discovered
-- Where you found it (which issue/file/context)
-- Suggested scope of the fix
+**Description discipline:**
+- Keep the description short: one-line summary or pointer only
+- Do **not** put a multi-sentence spec or context dump in the description
+- Add extra detail in a comment if needed: `bd comments add <new-id> "details"`
+- If the discovered work needs substantial scope or requirements, promote it to a plan instead of writing a verbose issue description
 
 **Priority guidance:**
 - `0` — Critical (security, data loss)

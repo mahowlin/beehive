@@ -51,8 +51,11 @@ bd dep relate <new-id> <source-id>     # Link discovery to source work
 
 ## Executing
 
-- For **plans** (type=epic): read the plan file referenced in the issue description, check off Tasks as you complete them
-- For **tasks**: read the issue description for acceptance criteria
+- For **plans** (type=epic): read the linked plan file, verify `PLAN-META.id` is populated and the epic description is exactly `Plan file: plans/<slug>.md`, then check off Tasks as you complete them
+- For **tasks**: execute the task from its acceptance criteria; do not turn a claimed task into a planning exercise
+- If asked to draft a plan, stay inside Beehive's plan-file workflow and do **not** enter Claude Code plan mode, use Shift+Tab, or invoke `/plan`
+- Do not treat `/deep-plan` as a reason to use Claude Code plan mode
+- Do not put long specs or context dumps into beads descriptions
 - Add progress comments: `bd comments add <id> "progress note"`
 - Out-of-scope discoveries → `/report`, then continue
 
@@ -65,7 +68,7 @@ Run `/buzz` which guides you to:
 
 ## Drafting Plans
 
-You may draft plans and submit to Queen for review. Use `plans/TEMPLATE.md` as your guide. The Queen will review, create the epic in beads, and add child tasks.
+You may draft plans and submit to Queen for review. Use `templates/plan.md` as your guide. Stay in Beehive's normal plan-file workflow; do **not** enter Claude Code plan mode. If you are drafting from or working from a plan, verify the plan's `PLAN-META.id` and linked `Plan file: plans/<slug>.md` epic description are present. Queen owns final epic and child-task creation after review, even when Bees draft the plan.
 
 ## Plan Markdown Files
 

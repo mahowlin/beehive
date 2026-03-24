@@ -13,3 +13,6 @@ plans/
 # Dolt database files (added by bd init)
 .dolt/
 *.db
+
+# Beads issue tracker (local database)
+.beads/

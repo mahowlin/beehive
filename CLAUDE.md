@@ -67,6 +67,17 @@ Key `bd` commands used by agents:
 - `bd list --json` — full state for status display
 - `bd prime` — AI-optimized workflow context (injected via hooks)
 
+## Safe bd Mutations
+
+- Treat `bd update`, `bd close`, and other write operations as coordination-state changes
+- Before any bulk mutation, test the exact command on one issue and verify with `bd show`
+- If correct, expand to a small batch and verify again before any full rollout
+- For description content loaded from a file, use `bd update <id> --body-file <path>`
+- Do not assume `--description @file` dereferences file content
+- Do not batch-close or batch-update issues you have not individually verified
+- If a mutation fails unexpectedly, stop and verify state before continuing
+
+
 ## Bash Conventions
 
 - `set -e` at top (fail fast)

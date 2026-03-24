@@ -65,15 +65,21 @@ Use `/buzz` when context window is filling or plan feels stale.
 
 ## Creating Work Items
 
+Do **not** use Claude Code plan mode, Shift+Tab, or `/plan` for Beehive planning.
+
 ### Plans (for complex work):
 1. Use `/deep-plan` for exploration if needed
-2. Write plan file to `plans/` using `plans/TEMPLATE.md`
-3. Create epic: `bd create "Plan title" --type epic -p 1 --description "See plans/name.md"`
-4. Create child tasks: `bd create "Task" --parent <epic-id> --description "Done when: ..."`
+2. Write the plan file to `plans/<slug>.md` from `templates/plan.md`
+3. Create the epic in beads and capture the returned id: `bd create "Plan title" --type epic -p 1 --description "Plan file: plans/<slug>.md"`
+4. Immediately write that returned id into `PLAN-META.id` in the plan file
+5. Keep the epic description exactly `Plan file: plans/<slug>.md`
+6. Only then create child tasks: `bd create "Task" --parent <epic-id> --description "Done when: ..."`
+7. Add dependencies after child tasks exist
 
 ### Tasks (for lightweight work):
-1. Create task: `bd create "Task title" --description "Done when: X. Context: Y"`
-2. If a task needs >5 sentences of context, promote to a plan
+1. Create task: `bd create "Task title" --description "Done when: X"`
+2. Keep task descriptions short and action-focused
+3. If the work needs substantial context, scope, or requirements, promote it to a plan instead of bloating the beads description
 
 ## Consolidating Status (/buzz)
 

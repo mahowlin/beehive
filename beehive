@@ -941,10 +941,20 @@ do_validate() {
     fi
 
     # Check issue counts
-    local open_count closed_count
-    open_count=$(cd "$path" && bd list --json 2>/dev/null | jq 'length')
-    closed_count=$(cd "$path" && bd list --json --all 2>/dev/null | jq '[.[] | select(.status == "closed")] | length')
-    echo -e "  ${GREEN}✓${NC} issues: $open_count open, $closed_count closed"
+    local issue_counts total_count open_count in_progress_count blocked_count closed_count other_count
+    issue_counts=$(cd "$path" && bd list --json --all 2>/dev/null | jq -r '
+        reduce .[] as $issue (
+            {total: 0, open: 0, in_progress: 0, blocked: 0, closed: 0, other: 0};
+            .total += 1 |
+            if $issue.status == "open" then .open += 1
+            elif $issue.status == "in_progress" then .in_progress += 1
+            elif $issue.status == "blocked" then .blocked += 1
+            elif $issue.status == "closed" then .closed += 1
+            else .other += 1
+            end
+        ) | "\(.total) \(.open) \(.in_progress) \(.blocked) \(.closed) \(.other)"')
+    read -r total_count open_count in_progress_count blocked_count closed_count other_count <<< "$issue_counts"
+    echo -e "  ${GREEN}✓${NC} issues: $total_count total ($open_count open, $in_progress_count in_progress, $blocked_count blocked, $closed_count closed, $other_count other)"
 
     echo ""
     if [[ $errors -eq 0 ]]; then

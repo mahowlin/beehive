@@ -59,6 +59,14 @@ bd dep relate <new-id> <source-id>     # Link discovery to source work
 - Add progress comments: `bd comments add <id> "progress note"`
 - Out-of-scope discoveries → `/report`, then continue
 
+## Labeling
+
+In single-repo projects, labels are optional. In multi-repo workspaces, maintain the repo or domain label on issues you touch so the shared queue stays navigable.
+
+- When you claim an issue in a workspace, sanity-check that its labels still match the actual repo or domain
+- When you report a discovery, include the same repo or domain label as the source work when appropriate
+- If a label is obviously wrong or missing, mention it to Queen or fix it if you were explicitly asked to do triage
+
 ## Completing
 
 Run `/buzz` which guides you to:

@@ -114,10 +114,45 @@ bd automatically syncs via Dolt:
 - ✅ Use bd for ALL task tracking
 - ✅ Always use `--json` flag for programmatic use
 - ✅ Link discovered work with `discovered-from` dependencies
-- ✅ Check `bd ready` before asking "what should I work on?"
+- ✅ Check assigned work (`bd list --assignee <name>`) before `bd ready`
 - ❌ Do NOT create markdown TODO lists
 - ❌ Do NOT use external issue trackers
 - ❌ Do NOT duplicate tracking systems
+
+### Plan ↔ Beads Linkage
+
+When a project uses plan files (`plans/*.md`), every plan must have bidirectional links to its beads issue:
+
+### Safe bd Mutations
+
+- Treat `bd update`, `bd close`, and other write operations as coordination-state changes
+- Before any bulk mutation, test the exact command on one issue and verify with `bd show`
+- If correct, expand to a small batch and verify again before any full rollout
+- For description content loaded from a file, use `bd update <id> --body-file <path>`
+- Do not assume `--description @file` dereferences file content
+- Do not batch-close or batch-update issues you have not individually verified
+
+
+**Plan file → Beads:** First line of the markdown file must be:
+```html
+<!-- PLAN-META id="<beads-id>" parent="<parent-id>" created="YYYY-MM-DD" -->
+```
+
+**Beads → Plan file:** First line of the beads issue description must be:
+```
+Plan file: plans/<project-prefix-filename>.md
+```
+
+**Creating a new plan:**
+1. Write plan file with blank `id=""` in PLAN-META
+2. Create beads epic with `Plan file: plans/<name>.md` in description
+3. Update the plan file's PLAN-META `id=` with the returned beads ID
+
+**Verification:**
+```bash
+head -1 plans/<name>.md     # Should show PLAN-META with id=
+bd show <id>                 # Description should start with Plan file:
+```
 
 For more details, see README.md and docs/QUICKSTART.md.
 

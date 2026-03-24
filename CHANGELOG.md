@@ -2,6 +2,22 @@
 
 All notable changes to Beehive are documented here.
 
+## v0.5.1 — 2026-03-24
+
+**Agent effectiveness improvements and workspace coordination polish.**
+
+### Changed
+- Workspace documentation now explains single-repo vs multi-repo setup more clearly.
+- Shipped Bee and Queen skills now treat repo/domain labels as part of normal workspace hygiene when multiple repos share one beads queue.
+
+### Added
+- Generic README examples for umbrella-directory and multi-repo workspace usage.
+- README guidance for tmux clipboard integration and why clipboard support is required.
+
+### Notes
+- Label guidance remains lightweight and generic: single-repo projects can stay unlabeled, while shared workspace queues benefit from consistent repo/domain labels.
+- Run `beehive --upgrade` in an existing project or workspace to refresh the shipped skills and commands.
+
 ## v0.5.0 — 2026-03-20
 
 **Markdown coordination replaced by beads-backed issue tracking.**

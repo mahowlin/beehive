@@ -31,6 +31,8 @@ bd create "Task title" --parent <epic-id> --description "Acceptance criteria"
 bd create "Bug report" --type bug -p 0 --description "What's broken"
 ```
 
+In single-repo projects, labels are optional. In multi-repo workspaces with a shared beads queue, add a consistent repo or domain label when creating or triaging work so ownership stays obvious.
+
 **Assigning work:**
 ```bash
 bd update <id> --assignee bee-1       # Assign to a specific agent
@@ -80,6 +82,7 @@ Do **not** use Claude Code plan mode, Shift+Tab, or `/plan` for Beehive planning
 1. Create task: `bd create "Task title" --description "Done when: X"`
 2. Keep task descriptions short and action-focused
 3. If the work needs substantial context, scope, or requirements, promote it to a plan instead of bloating the beads description
+4. In multi-repo workspaces, add or verify a repo/domain label before leaving the issue in `bd ready`
 
 ## Consolidating Status (/buzz)
 

@@ -1,8 +1,8 @@
 # Beehive
 
-Multi-agent orchestration for Claude Code.
+Run a small team of Claude Code agents in tmux.
 
-```
+```text
 ┌──────────┬──────────┐
 │ 🐝 Bee 1 │ 🐝 Bee 2 │
 ├──────────┼──────────┤
@@ -10,9 +10,11 @@ Multi-agent orchestration for Claude Code.
 └──────────┴──────────┘
 ```
 
-**3-5 Bees** execute plans. **1 Queen** works on plans and coordinates. **You** (the Beekeeper) direct traffic.
+**3-5 Bees** do the work. **1 Queen** coordinates. **You** direct the hive.
 
-**Who is this for?** Developers who want to run multiple Claude Code agents in parallel on a single codebase, with structured coordination and interactive oversight.
+Beehive works well for:
+- a single repository
+- a multi-repo workspace with sibling repos under one root
 
 Inspired by [Gas Town](https://steve-yegge.medium.com/welcome-to-gas-town-4f25ee16dd04).
 
@@ -26,255 +28,214 @@ Inspired by [Gas Town](https://steve-yegge.medium.com/welcome-to-gas-town-4f25ee
 | Claude Code | [Install guide](https://docs.anthropic.com/en/docs/claude-code) | [Install guide](https://docs.anthropic.com/en/docs/claude-code) |
 | Clipboard | `pbcopy` (built-in) | `sudo apt install xclip` or `xsel` |
 
+Clipboard support is for tmux copy-mode, so you can mouse-select text in an agent pane and copy it to your system clipboard.
+
 Works best with **Claude Opus 4.6**.
 
 ## Quick Start
 
-```bash
-# 1. Install prerequisites (see Requirements above)
+### Single repository
 
-# 2. Clone and install beehive
+```bash
+# 1. Clone and install beehive
 git clone https://github.com/mahowlin/beehive.git ~/beehive
 sudo ln -sf ~/beehive/beehive /usr/local/bin/beehive
 
-# 3. Initialize your project
+# 2. Initialize your repo
 cd ~/myproject
 beehive --init
 
-# 4. (Optional) Configure a backend
+# 3. Optional: configure backend
 cat > .beehive.conf << 'EOF'
-# API proxy (e.g. local proxy to Anthropic API)
 CONF_ANTHROPIC_BASE_URL=http://localhost:8090
 CONF_ANTHROPIC_API_KEY=sk-ant-your-key
-
-# OR: AWS Bedrock
-# CONF_AWS_PROFILE=my-profile
-# CONF_AWS_REGION=us-west-2
-# CONF_MODEL=us.anthropic.claude-sonnet-4-20250514-v1:0
 EOF
 
-# 5. Launch
+# 4. Launch
 beehive
 ```
 
-**Upgrading an existing project:**
+### Multi-repo workspace
 
 ```bash
-# After updating beehive (git pull), upgrade your project files
-beehive --upgrade
+# 1. Create or enter a workspace root
+mkdir -p ~/practice-workspace
+cd ~/practice-workspace
+
+# 2. Add multiple sibling repos
+git clone git@github.com:example/platform-a.git
+git clone git@github.com:example/platform-b.git
+git clone git@github.com:example/infra.git
+git clone git@github.com:example/docs.git
+
+# 3. Initialize from the workspace root
+beehive --init
+
+# 4. Optional: configure backend for the whole workspace
+cat > .beehive.conf << 'EOF'
+CONF_ANTHROPIC_BASE_URL=http://localhost:8090
+CONF_ANTHROPIC_API_KEY=sk-ant-your-key
+EOF
+
+# 5. Launch from the workspace root
+beehive
 ```
 
-This overwrites skills, commands, and the plan template with the latest versions. If your project still uses legacy markdown tracking (`TRACKER.md`, `.hive/`, `INBOX.md`, `SESSION_LOG.md`), `--upgrade` migrates it directly to beads and preserves the originals in `plans/_meta/migrated/`.
+In workspace mode, keep `.beehive.conf` in the workspace root so all panes share the same configuration.
 
-**Install note:** Symlink goes to `/usr/local/bin` (works on macOS and Linux). Use `sudo` if needed. On Apple Silicon, `/opt/homebrew/bin` also works.
+If you use a shared `plans/` directory across several repos, give plans clear repo-prefixed names like `platform-a-auth.md` or `infra-deploy-pipeline.md`.
 
 ## What `beehive --init` Creates
 
-Source templates live in `skills/` and `commands/` in the beehive repo; `--init` copies them into your project as `.skills/` and `.claude/commands/`.
+Beehive installs its working files into your repo or workspace.
 
-```
+### Single repository
+
+```text
 myproject/
-├── CLAUDE.md                    # Project instructions for agents
-├── .beads/                      # Beads issue tracker (Dolt database, gitignored)
+├── CLAUDE.md
+├── .beads/
 ├── .skills/
-│   ├── bee.md                   # Bee behavior rules
-│   └── queen.md                 # Queen behavior rules
-├── .claude/commands/            # Slash commands
-│   ├── buzz.md
-│   ├── report.md
-│   ├── bedtime.md
-│   ├── session-report.md
-│   ├── deep-plan.md
-│   └── review.md
+├── .claude/commands/
 └── plans/
-    ├── TEMPLATE.md              # Template for new plans
-    ├── completed/               # Archived plans
+    ├── TEMPLATE.md
+    ├── completed/
     └── _meta/
-        └── sessions.jsonl       # Session reports (Queen owns)
+        └── sessions.jsonl
 ```
 
-**Workspace mode** (multiple git repos in one directory) creates a CLAUDE.md with a repository inventory table. Git worktrees are fully supported.
+### Multi-repo workspace
+
+```text
+practice-workspace/
+├── CLAUDE.md
+├── .beads/
+├── .skills/
+├── .claude/commands/
+├── plans/
+│   ├── TEMPLATE.md
+│   ├── completed/
+│   └── _meta/
+│       └── sessions.jsonl
+├── platform-a/
+│   └── CLAUDE.md    # added if missing
+├── platform-b/
+│   └── CLAUDE.md    # added if missing
+├── infra/
+│   └── CLAUDE.md    # added if missing
+└── docs/
+    └── CLAUDE.md    # added if missing
+```
+
+Workspace mode is detected automatically when a directory contains multiple sibling git repos.
+
+In workspace mode, agents start in the workspace root and move into the relevant repo when needed.
 
 ## How It Works
 
-```
-                              ┌─────────────┐
-                              │  Beekeeper  │◄──────────────────────┐
-                              │    (you)    │                       │
-                              └──────┬──────┘                       │
-                                     │ directs                      │
-            ┌────────────────────────┼────────────────────────┐     │
-            ▼                        ▼                        ▼     │
-      ┌───────────┐            ┌───────────┐            ┌───────────┐
-      │   Bee 1   │            │   Bee 2   │            │   Bee 3   │
-      └─────┬─────┘            └─────┬─────┘            └─────┬─────┘
-            │ bd commands            │ bd commands            │ bd commands
-            └────────────────────────┼────────────────────────┘
-                                     │
-                                     ▼
-                              ┌─────────────┐
-                              │   .beads/   │ ← Dolt database
-                              │  (bd CLI)   │   Atomic claims,
-                              └──────┬──────┘   dependencies,
-                                     │          audit trail
-                                     ▼
-                              ┌─────────────┐
-                              │    Queen    │───────────────────────┘
-                              └──────┬──────┘
-                                     │ creates issues, verifies,
-                                     │ closes, coordinates
-                                     ▼
-                              ┌─────────────┐
-                              │   plans/    │
-                              │(plan files) │
-                              └─────────────┘
-```
+- You tell the Queen what to do
+- The Queen breaks work into plans or tasks
+- Bees pick up work and execute it
+- You review progress and direct traffic between panes
 
-**Roles:**
-- **Queen** — Works on plans, coordinates hive, creates/assigns work, verifies completion
-- **Bees** — Execute plans/tasks, claim work atomically via `bd update --claim`, report discoveries
-- **Beekeeper (you)** — Direct agents, copy messages between panes, approve major steps
-
-**Work items** are **beads issues**: either **epics** (with a markdown plan file in `plans/`) or **tasks** (with acceptance criteria in the issue description). Tasks are for lightweight work; epics are for complex multi-step work.
-
-**Workflow:**
-1. Tell Queen what to build
-2. Queen creates epics/tasks via `bd create` (and plan files in `plans/`)
-3. Agents claim work: `bd update <id> --claim` (atomic, no conflicts)
-4. Agents execute, add progress comments, run `/buzz` when done
-5. Queen verifies and closes: `bd close <id>`
+For most users, that's the important part. Beehive installs the agent instructions and coordination files it needs during `--init`.
 
 ## Commands
 
 | Command | Who | Purpose |
 |---------|-----|---------|
-| `/buzz` | Any | Check in: plan hygiene, self-check, completion. Queen also coordinates hive. |
-| `/report` | Any | Report out-of-scope discoveries (creates beads issue) |
-| `/bedtime` | Any | Save state before break or session end |
-| `/session-report` | Queen | Write end-of-session report to session metadata log |
-| `/deep-plan` | Queen | Structured exploration before plan creation |
-| `/review` | Queen | Strategic project assessment (every few hours) |
+| `/buzz` | Any | Check in and coordinate progress |
+| `/report` | Any | Report out-of-scope discoveries |
+| `/bedtime` | Any | Save state before a break or session end |
+| `/session-report` | Queen | Write end-of-session metadata |
+| `/deep-plan` | Queen | Explore before writing a plan |
+| `/review` | Queen | Strategic project review |
 
 ## Configuration
 
-Claude Code works without configuration. Create `.beehive.conf` in your project root to customize:
+Create `.beehive.conf` in your project or workspace root.
 
-**API Proxy** (local proxy to Anthropic API):
 ```bash
+CONF_SESSION=my-session
+CONF_CLAUDE_CMD=/path/to/claude
+CONF_BEES=5
+
+CONF_MODEL=claude-opus-4-6
+CONF_MODEL_BEE=claude-sonnet-4-6
+CONF_MODEL_QUEEN=claude-opus-4-6
+
+# Optional API proxy
 CONF_ANTHROPIC_BASE_URL=http://localhost:8090
 CONF_ANTHROPIC_API_KEY=sk-ant-your-key
+
+# Optional AWS Bedrock
+# CONF_AWS_PROFILE=my-profile
+# CONF_AWS_REGION=us-west-2
 ```
 
-**AWS Bedrock:**
-```bash
-CONF_AWS_PROFILE=my-profile
-CONF_AWS_REGION=us-west-2
-CONF_MODEL=us.anthropic.claude-sonnet-4-20250514-v1:0
-```
+CLI flags override config values.
 
-**General options:**
-```bash
-CONF_SESSION=my-session          # Custom tmux session name
-CONF_CLAUDE_CMD=/path/to/claude  # Custom claude path
-CONF_BEES=5                      # Number of Bees (3-5, default: 3)
-```
+## Upgrade
 
-**Per-role model overrides:**
-```bash
-CONF_MODEL=claude-opus-4-6           # Fallback for all agents
-CONF_MODEL_BEE=claude-sonnet-4-6     # Override for all Bees
-CONF_MODEL_QUEEN=claude-opus-4-6     # Override for Queen
-```
-
-Precedence: role CLI (`--bee-model`) → global CLI (`--model`) → role config (`CONF_MODEL_BEE`) → global config (`CONF_MODEL`)
-
-**Scaling up:**
+After updating Beehive itself, refresh an existing project or workspace with:
 
 ```bash
-beehive --bees 5    # 5 bees + Queen (6 agents)
+beehive --upgrade
 ```
 
-```
-┌──────────┬──────────┬──────────┐
-│ 🐝 Bee 1 │ 🐝 Bee 2 │ 🐝 Bee 3 │
-├──────────┼──────────┼──────────┤
-│ 🐝 Bee 4 │ 🐝 Bee 5 │ 🐝 Queen │
-└──────────┴──────────┴──────────┘
-```
-
-**Tmux controls:**
-
-| Key | Action |
-|-----|--------|
-| Click | Switch panes |
-| Scroll | Scroll in pane |
-| Ctrl+b, z | Zoom pane |
-| Ctrl+b, d | Detach (keeps running) |
+Run that from the workspace root if you are using Beehive across multiple repos.
 
 ## CLI Usage
 
-```
+```text
 Usage: beehive [options] [path]
 
 Commands:
     beehive [path]              Launch agents (default: current directory)
     beehive --init [path]       Initialize repo/workspace structure
-    beehive --upgrade [path]    Upgrade skills, commands, and template (preserves data)
+    beehive --upgrade [path]    Upgrade skills, commands, and template
     beehive --status [path]     Show work items, agent states, and ready queue
     beehive --validate [path]   Validate beads health and session metadata log
 
 Options:
-    --session NAME       Session name (default: folder name)
-    --model MODEL        Anthropic model override
-    --bee-model MODEL    Model override for all Bees
-    --queen-model MODEL  Model override for Queen
-    --bees N             Number of Bees (3-5, default: 3)
-    --profile PROF       AWS profile for Bedrock
-    --region REGION      AWS region for Bedrock
-    --base-url URL       Anthropic API base URL (for API proxies)
-    --api-key KEY        Anthropic API key
-    --dry-run            Preview upgrade changes without modifying files
-    --json               Machine-readable JSON output for --status
-    --yes                Skip confirmation
-    --version            Show version
-    --help               Show this help
+    --session NAME
+    --model MODEL
+    --bee-model MODEL
+    --queen-model MODEL
+    --bees N
+    --profile PROF
+    --region REGION
+    --base-url URL
+    --api-key KEY
+    --dry-run
+    --json
+    --yes
+    --version
+    --help
 ```
 
 ## Troubleshooting
 
 **Stuck in tmux?**
-- Press `Ctrl+b`, then `d` to detach (beehive keeps running in background)
-- Run `tmux attach` to get back in
-- Run `tmux kill-server` to kill everything and start fresh
+- `Ctrl+b`, then `d` to detach
+- `tmux attach` to get back in
+- `tmux kill-server` to start fresh
 
-**"jq required"**
-- macOS: `brew install jq`
-- Linux: `sudo apt install jq`
+**Missing dependencies?**
+- `jq`: install from the Requirements table above
+- `bd` (beads): install from the Requirements table above
+- `tmux`: install from the Requirements table above
+- `claude`: ensure Claude Code is installed and in your PATH
 
-**"bd (beads) required"**
-- macOS: `brew install steveyegge/tap/beads`
-- See [beads installation](https://github.com/steveyegge/beads#installation) for other platforms
+**Clipboard not working?**
+- macOS: `pbcopy` should work out of the box
+- Linux: install `xclip` or `xsel`, then restart Beehive
+- Make sure the tmux session was started by Beehive
 
-**"Claude CLI not found"**
-- Ensure `claude` is installed and in your PATH
-- Or set `CONF_CLAUDE_CMD=/path/to/claude` in `.beehive.conf`
-
-**"tmux required"**
-- macOS: `brew install tmux`
-- Linux: `sudo apt install tmux`
-
-**Clipboard not working**
-- macOS: Should work out of the box (`pbcopy`)
-- Linux: Install `xclip` or `xsel`, then restart beehive
-
-**Permission denied on symlink**
-- Use `sudo ln -sf ~/beehive/beehive /usr/local/bin/beehive`
-- Or symlink to `~/.local/bin` (add to PATH if needed)
-
-**"Cannot reach API proxy"**
-- Ensure your API proxy is running and accessible at the configured URL
-- Check the URL in `.beehive.conf` or `--base-url` flag
-- Beehive checks `{base_url}/health` with a 5-second timeout
+**API proxy not reachable?**
+- Check `.beehive.conf` or `--base-url`
+- Make sure the proxy is running and reachable
+- Beehive checks `{base_url}/health`
 
 ## License
 

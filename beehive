@@ -17,7 +17,7 @@
 
 set -e
 
-VERSION="0.5.1"
+VERSION="0.5.2"
 
 # Resolve symlinks to find actual script location (portable for Linux/macOS)
 SCRIPT_SOURCE="${BASH_SOURCE[0]}"
@@ -383,6 +383,14 @@ do_launch() {
 
     [[ ! -f "$path/CLAUDE.md" ]] && die "Not initialized. Run: beehive --init $path"
 
+    # Start persistent beads server for session (avoids per-command start/stop churn)
+    info "Starting beads server..."
+    if (cd "$path" && bd dolt start) 2>/dev/null; then
+        success "  Beads server running"
+    else
+        warn "Could not start persistent beads server (agents will use per-command mode)"
+    fi
+
     # Kill existing
     tmux kill-session -t "$SESSION_NAME" 2>/dev/null || true
 
@@ -404,6 +412,11 @@ do_launch() {
     tmux bind-key -T copy-mode MouseDragEnd1Pane send-keys -X copy-pipe-and-cancel "$clip"
     tmux bind-key -T copy-mode-vi MouseDragEnd1Pane send-keys -X copy-pipe-and-cancel "$clip"
 
+    # Stop beads server when tmux session ends
+    local escaped_path
+    printf -v escaped_path '%q' "$path"
+    tmux set-hook -t "$SESSION_NAME" session-closed "run-shell 'cd $escaped_path && bd dolt stop 2>/dev/null || true'"
+
     # Name panes: bees 0..num_bees-1, queen at num_bees
     for (( i=0; i<num_bees; i++ )); do
         local bee_num=$((i + 1))
@@ -412,7 +425,7 @@ do_launch() {
     tmux select-pane -t "$SESSION_NAME:0.$num_bees" -T "🐝 Queen"
 
     # Prompts - agents read their skill files and use bd for coordination
-    local bee_prompt="Read CLAUDE.md and .skills/bee.md. You are Bee %d. Run 'bd prime' for workflow context. Follow your skill instructions. Use /report for discoveries, /buzz to check in, /bedtime to save state. Wait for user direction."
+    local bee_prompt="Read CLAUDE.md and .skills/bee.md. You are Bee %d. Run 'bd prime' for workflow context. Follow your skill instructions. Then check your assignments: run 'bd list --assignee bee-%d'. If you have work, start on the highest priority item. If not, run 'bd ready', claim something, and begin. Use /report for discoveries, /buzz to check in, /bedtime to save state."
 
     local queen_prompt="Read CLAUDE.md and .skills/queen.md. You are the Queen. Run 'bd prime' for workflow context. Follow your skill instructions. You work on plans AND coordinate. Use /buzz to consolidate, /session-report at end of session. Wait for user direction."
 
@@ -421,7 +434,7 @@ do_launch() {
         local prompt
         local bee_num=$((i + 1))
         # shellcheck disable=SC2059
-        printf -v prompt "$bee_prompt" "$bee_num"
+        printf -v prompt "$bee_prompt" "$bee_num" "$bee_num"
         local pane_cmd
         pane_cmd=$(build_pane_command "$prompt" "$bee_model" "bee-$bee_num")
         tmux send-keys -t "$SESSION_NAME:0.$i" "$pane_cmd" Enter
@@ -965,6 +978,22 @@ do_validate() {
         return 1
     fi
 }
+
+#######################################
+# Stop persistent beads server
+#######################################
+do_stop() {
+    local path="$1"
+    [[ ! -d "$path/.beads" ]] && die "No beads database found in $path"
+
+    info "Stopping beads server..."
+    if (cd "$path" && bd dolt stop) 2>/dev/null; then
+        success "✓ Beads server stopped"
+    else
+        info "No beads server running (nothing to stop)"
+    fi
+}
+
 usage() {
     cat << EOF
 Usage: beehive [options] [path]
@@ -977,6 +1006,7 @@ Commands:
     beehive --upgrade [path]    Upgrade skills, commands, and template (preserves data)
     beehive --status [path]     Show work items, agent states, and ready queue
     beehive --validate [path]   Validate beads health and sessions.jsonl
+    beehive --stop [path]       Stop the persistent beads server
 
 Options:
     --session NAME       Session name (default: folder name)
@@ -1033,6 +1063,7 @@ main() {
             --upgrade)      cmd="upgrade"; shift ;;
             --status)       cmd="status"; shift ;;
             --validate)     cmd="validate"; shift ;;
+            --stop)         cmd="stop"; shift ;;
             --dry-run)      DRY_RUN=true; shift ;;
             --json)         JSON_OUTPUT=true; shift ;;
             --session)      [[ -z "${2:-}" || "${2:-}" == -* ]] && die "--session requires a value"; CLI_SESSION_NAME="$2"; shift 2 ;;
@@ -1064,6 +1095,7 @@ main() {
         upgrade) do_upgrade "$path" ;;
         status) do_status "$path" ;;
         validate) do_validate "$path" ;;
+        stop) do_stop "$path" ;;
         *)
             echo ""
             echo -e "${GREEN}Beehive${NC} v$VERSION"

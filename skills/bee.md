@@ -2,6 +2,13 @@
 
 You are a Bee. Execute plans and tasks, report status, stay in scope.
 
+## Beekeeper Vocabulary
+
+When the beekeeper (user) says:
+- **"Update your plan"** — Update the plan file linked to your parent epic (checkboxes, Session State). Then `bd comments add` on your task.
+- **"Create a plan"** — Run `/deep-plan`.
+- **"What's your plan?"** — Summarize your current approach. Don't create a file unless asked.
+
 ## Commands
 - `/report` - Found out-of-scope work (creates a beads issue)
 - `/buzz` - Check in: plan hygiene, self-check, completion
@@ -15,8 +22,9 @@ All task tracking uses the `bd` CLI. Run `bd prime` if you need a workflow refre
 
 **Finding work:**
 ```bash
-bd ready                              # Show issues you can work on (unblocked, unassigned)
-bd show <id>                          # Read full details before starting
+bd list --assignee <your-name>    # Check assigned work FIRST (e.g. bee-1)
+bd ready                          # Fallback: unblocked, unassigned work
+bd show <id>                      # Read full details before starting
 ```
 
 **Claiming work:**
@@ -42,21 +50,39 @@ bd create "Found: no rate limiting" --type bug -p 1 --description "Discovered wh
 bd dep relate <new-id> <source-id>     # Link discovery to source work
 ```
 
+## Session Start
+
+When you start, **immediately** check for assigned work and begin. Do not wait for instructions.
+
+```bash
+# 1. Check what's assigned to you
+bd list --assignee <your-name>    # e.g. bd list --assignee bee-1
+
+# 2. If you have assignments, start on the highest priority one
+bd show <id>                      # Read full details
+
+# 3. Only if no assignments, check the ready queue
+bd ready                          # Unblocked, unassigned work
+```
+
+**If you have multiple assignments:** Start with the highest priority item. If same priority, start with the one that has the fewest unresolved dependencies. Do not ask the user to choose.
+
 ## Claiming Work
 
-1. Run `bd ready` to see available work
-2. Run `bd show <id>` to review details
-3. Run `bd update <id> --claim` to claim it (atomic — will fail if someone else already claimed)
-4. If claim fails, pick another item from `bd ready`
+1. If Queen assigned you work, it's already yours — run `bd show <id>` and start
+2. If picking from `bd ready`, run `bd update <id> --claim` (atomic — will fail if someone else claimed)
+3. If claim fails, pick another item from `bd ready`
 
 ## Executing
 
 - For **plans** (type=epic): read the linked plan file, verify `PLAN-META.id` is populated and the epic description is exactly `Plan file: plans/<slug>.md`, then check off Tasks as you complete them
-- For **tasks**: execute the task from its acceptance criteria; do not turn a claimed task into a planning exercise
+- For **tasks with a parent**: run `bd show <parent-id>` and read the linked plan file — your task is one piece of that plan, understand the full context before starting
+- For **standalone tasks**: execute from the acceptance criteria in the description
+- Do not turn a claimed task into a planning exercise
 - If asked to draft a plan, stay inside Beehive's plan-file workflow and do **not** enter Claude Code plan mode, use Shift+Tab, or invoke `/plan`
 - Do not treat `/deep-plan` as a reason to use Claude Code plan mode
 - Do not put long specs or context dumps into beads descriptions
-- Add progress comments: `bd comments add <id> "progress note"`
+- **Progress updates always sync both:** when you add a `bd comments add`, also update the plan file if one is linked (checkboxes, Session State)
 - Out-of-scope discoveries → `/report`, then continue
 
 ## Labeling

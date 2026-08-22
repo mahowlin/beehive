@@ -1,5 +1,5 @@
 #!/bin/bash
-# beehive - Multi-agent orchestration for Claude Code
+# beehive - Multi-agent orchestration for CLI-backed coding agents
 #
 # Usage:
 #   beehive [path]           Run agents (auto-detects mode)
@@ -91,9 +91,14 @@ load_config() {
             CONF_MODEL_QUEEN)         CONF_MODEL_QUEEN="$value" ;;
             CONF_SESSION)             CONF_SESSION="$value" ;;
             CONF_CLAUDE_CMD)          CONF_CLAUDE_CMD="$value" ;;
+            CONF_CLI)                 CONF_CLI="$value" ;;
+            CONF_CLI_CMD)             CONF_CLI_CMD="$value" ;;
+            CONF_APPROVAL_MODE)       CONF_APPROVAL_MODE="$value" ;;
             CONF_ANTHROPIC_BASE_URL)  CONF_ANTHROPIC_BASE_URL="$value" ;;
             CONF_ANTHROPIC_API_KEY)   CONF_ANTHROPIC_API_KEY="$value" ;;
             CONF_BEES)                CONF_BEES="$value" ;;
+            CONF_QUEEN)               CONF_QUEEN="$value" ;;
+            CONF_AGENT_CMD)           CONF_CLI_CMD="$value" ;;
         esac
     done < "$config_path"
     return 0
@@ -115,14 +120,30 @@ detect_clipboard() {
 }
 
 #######################################
-# Find claude command
+# Resolve agent CLI command
 #######################################
-find_claude() {
-    [[ -n "$CONF_CLAUDE_CMD" ]] && command -v "$CONF_CLAUDE_CMD" &> /dev/null && echo "$CONF_CLAUDE_CMD" && return 0
+resolve_cli_command() {
+    local cli_family="$1" explicit_cmd="$2"
 
-    for loc in claude /opt/homebrew/bin/claude /usr/local/bin/claude "$HOME/.local/bin/claude"; do
-        command -v "$loc" &> /dev/null && echo "$loc" && return 0
-    done
+    if [[ -n "$explicit_cmd" ]]; then
+        command -v "$explicit_cmd" &> /dev/null && echo "$explicit_cmd" && return 0
+        return 1
+    fi
+
+    case "$cli_family" in
+        claude)
+            [[ -n "${CONF_CLAUDE_CMD:-}" ]] && command -v "$CONF_CLAUDE_CMD" &> /dev/null && echo "$CONF_CLAUDE_CMD" && return 0
+            for loc in claude /opt/homebrew/bin/claude /usr/local/bin/claude "$HOME/.local/bin/claude"; do
+                command -v "$loc" &> /dev/null && echo "$loc" && return 0
+            done
+            ;;
+        codex)
+            command -v codex &> /dev/null && echo "codex" && return 0
+            ;;
+        cursor)
+            command -v agent &> /dev/null && echo "agent" && return 0
+            ;;
+    esac
     return 1
 }
 
@@ -140,19 +161,55 @@ resolve_setting() {
 }
 
 #######################################
+# Resolve fixed, safe approval arguments for each CLI.
+# Never accept arbitrary approval flags from configuration.
+#######################################
+resolve_approval_args() {
+    local cli_family="$1" approval_mode="$2"
+
+    [[ "$approval_mode" == "manual" ]] && return 0
+    [[ "$approval_mode" == "auto" ]] || die "Approval mode must be auto or manual (got: $approval_mode)"
+
+    case "$cli_family" in
+        claude)
+            printf '%q %q' "--permission-mode" "auto"
+            ;;
+        codex)
+            printf '%q %q %q %q %q %q' \
+                "--sandbox" "workspace-write" \
+                "--ask-for-approval" "on-request" \
+                "-c" "approvals_reviewer=auto_review"
+            ;;
+        cursor)
+            # Cursor has no verified equivalent; preserve its native defaults.
+            return 0
+            ;;
+        *)
+            die "Unsupported CLI family for approval mode: $cli_family"
+            ;;
+    esac
+}
+
+#######################################
 # Build per-pane shell command with env vars and model
 # Uses inline env prefix (VAR=val cmd) so vars are scoped to the command
 #######################################
 build_pane_command() {
     local prompt="$1" model="$2" actor="${3:-}"
-    local env_prefix="env -u CLAUDECODE"
+    local env_prefix="env -u CLAUDECODE COLORTERM=truecolor CLICOLOR=1 CLICOLOR_FORCE=1 FORCE_COLOR=1"
     [[ -n "$AWS_PROFILE" ]] && env_prefix+=" AWS_PROFILE=$(printf '%q' "$AWS_PROFILE")"
     [[ -n "$AWS_REGION" ]] && env_prefix+=" AWS_REGION=$(printf '%q' "$AWS_REGION")"
     [[ -n "$ANTHROPIC_BASE_URL" ]] && env_prefix+=" ANTHROPIC_BASE_URL=$(printf '%q' "$ANTHROPIC_BASE_URL")"
     [[ -n "$ANTHROPIC_API_KEY" ]] && env_prefix+=" ANTHROPIC_API_KEY=$(printf '%q' "$ANTHROPIC_API_KEY")"
     [[ -n "$model" ]] && env_prefix+=" ANTHROPIC_MODEL=$(printf '%q' "$model")"
     [[ -n "$actor" ]] && env_prefix+=" BD_ACTOR=$(printf '%q' "$actor")"
-    printf '%s %s %q' "$env_prefix" "$CLAUDE" "$prompt"
+    local approval_args
+    approval_args=$(resolve_approval_args "${CLI_FAMILY:-claude}" "${APPROVAL_MODE:-auto}")
+    if [[ -n "$approval_args" ]]; then
+        printf '%s %q %s %q' "$env_prefix" "$AGENT_CMD" "$approval_args" "$prompt"
+    else
+        printf '%s %q %q' "$env_prefix" "$AGENT_CMD" "$prompt"
+    fi
 }
 
 #######################################
@@ -216,7 +273,7 @@ init_commands() {
     local dir="$1"
     mkdir -p "$dir/.claude/commands"
 
-    for cmd in report buzz bedtime session-report deep-plan review; do
+    for cmd in report buzz bedtime session-report deep-plan review board health; do
         [[ -f "$dir/.claude/commands/$cmd.md" ]] || cp "$SCRIPT_DIR/commands/$cmd.md" "$dir/.claude/commands/$cmd.md"
     done
 }
@@ -268,17 +325,18 @@ init_repo() {
 <!-- Describe the project -->
 
 ## Agent Roles
-- **Queen**: Works on plans, coordinates hive, tracks progress, verifies completion. Read `.skills/queen.md`
-- **Bees**: Execute plans, update status, report discoveries. Read `.skills/bee.md`
+- **Queen**: Owns super-swarms, critical path, Bee slot state, dispatch, and verification. Read `.skills/queen.md`
+- **Bees**: Own scoped swarms and execute assigned beads. Read `.skills/bee.md`
 
 ## Coordination
 This project uses **beads** (`bd`) for task tracking and coordination.
-- `bd ready` — find available work
-- `bd update <id> --claim` — claim a task
-- `bd close <id>` — mark complete
-- `bd create` — create new issues/tasks
-- `plans/` — plan markdown files (referenced by beads issues)
-- `plans/_meta/sessions.jsonl` — session reports (Queen owns)
+- Assigned executable beads are the plan; do not enter Claude plan mode for scoped work
+- Queen reviews `bd ready`; Bees do not self-dispatch unless explicitly authorized
+- `bd update <id> --claim` — claim only when Queen/free-pick allows it
+- `bd close <id>` — mark complete with evidence
+- `bd create` — create parented or source-linked issues/tasks
+- `plans/` — archive only; new plans are Beads epics
+- `plans/_meta/sessions.jsonl` — session metadata (Queen owns)
 
 ## Guidelines
 - Ask approval before environment-impacting operations
@@ -305,8 +363,8 @@ init_workspace() {
         {
             echo "# Workspace Instructions"
             echo ""
-            echo "Multi-repo workspace. All coordination via \`plans/_meta/\`."
-            echo "When assigned a plan, cd to the target repo and read its CLAUDE.md."
+            echo "Multi-repo workspace. All coordination via Beads."
+            echo "When assigned a bead, cd to the target repo and read its CLAUDE.md."
             echo ""
             echo "## Repositories"
             echo "| Repository | Description |"
@@ -316,17 +374,18 @@ init_workspace() {
             done
             echo ""
             echo "## Agent Roles"
-            echo "- **Queen**: Works on plans, coordinates hive, tracks progress, verifies completion. Read \`.skills/queen.md\`"
-            echo "- **Bees**: Execute plans, update status, report discoveries. Read \`.skills/bee.md\`"
+            echo "- **Queen**: Owns super-swarms, critical path, Bee slot state, dispatch, and verification. Read \`.skills/queen.md\`"
+            echo "- **Bees**: Own scoped swarms and execute assigned beads. Read \`.skills/bee.md\`"
             echo ""
             echo "## Coordination"
             echo "This project uses **beads** (\`bd\`) for task tracking and coordination."
-            echo "- \`bd ready\` — find available work"
-            echo "- \`bd update <id> --claim\` — claim a task"
-            echo "- \`bd close <id>\` — mark complete"
-            echo "- \`bd create\` — create new issues/tasks"
-            echo "- \`plans/\` — plan markdown files (referenced by beads issues)"
-            echo "- \`plans/_meta/sessions.jsonl\` — session reports (Queen owns)"
+            echo "- Assigned executable beads are the plan; do not enter Claude plan mode for scoped work"
+            echo "- Queen reviews \`bd ready\`; Bees do not self-dispatch unless explicitly authorized"
+            echo "- \`bd update <id> --claim\` — claim only when Queen/free-pick allows it"
+            echo "- \`bd close <id>\` — mark complete with evidence"
+            echo "- \`bd create\` — create parented or source-linked issues/tasks"
+            echo "- \`plans/\` — archive only; new plans are Beads epics"
+            echo "- \`plans/_meta/sessions.jsonl\` — session metadata (Queen owns)"
             echo ""
             echo "## Guidelines"
             echo "- Ask approval before environment-impacting operations"
@@ -357,19 +416,54 @@ init_workspace() {
     echo "  Run: beehive $dir"
 }
 
+queen_prompt_text() {
+    local path="$1"
+    printf "Read CLAUDE.md and .skills/queen.md. You are the Queen. Run 'bd -C %q prime' for workflow context. Follow your skill instructions. You own super-swarms, critical path, Bee slot state, and dispatch; Bees own scoped swarms. Use buzz for tactical dispatch refresh and session-report for maturity/unlocks/roadblocks. If this CLI rejects slash commands, treat buzz/board/health/report/bedtime/session-report/deep-plan/review as named procedures from .skills/.claude/commands and perform the equivalent bd comments/updates directly. Wait for user direction." "$path"
+}
+
 #######################################
 # Launch agents
 #######################################
+do_queen_only() {
+    local path="$1" queen_model="$2" cli_family="${3:-claude}"
+
+    AGENT_CMD=$(resolve_cli_command "$cli_family" "$CLI_CMD_OVERRIDE") || die "Agent CLI '$cli_family' not found. Install it or set CONF_CLI_CMD/--cli-cmd."
+
+    if [[ -n "$ANTHROPIC_BASE_URL" ]]; then
+        if ! curl -sf --max-time 5 "${ANTHROPIC_BASE_URL}/health" > /dev/null 2>&1; then
+            die "Cannot reach API proxy at $ANTHROPIC_BASE_URL/health — is it running?"
+        fi
+    fi
+
+    [[ ! -f "$path/CLAUDE.md" ]] && die "Not initialized. Run: beehive --init $path"
+
+    if (cd "$path" && bd context >/dev/null) 2>/dev/null; then
+        success "  Beads context ready"
+    else
+        warn "Could not validate Beads context (Queen will report details from bd prime)"
+    fi
+
+    local prompt queen_cmd
+    prompt=$(queen_prompt_text "$path")
+    queen_cmd=$(build_pane_command "$prompt" "$queen_model" "queen")
+
+    success "✓ Launching Queen only (no tmux)"
+    cd "$path" || die "Could not cd to $path"
+    eval "$queen_cmd"
+}
+
 do_launch() {
-    local path="$1" bee_model="$2" queen_model="$3" num_bees="${4:-3}"
-    local total_panes=$((num_bees + 1))
+    local path="$1" bee_model="$2" queen_model="$3" num_bees="${4:-3}" launch_queen="${5:-true}" cli_family="${6:-claude}"
+    local queen_panes=0
+    [[ "$launch_queen" == "true" ]] && queen_panes=1
+    local total_panes=$((num_bees + queen_panes))
     local mode
     mode=$(detect_mode "$path")
 
     # Config already loaded before confirmation
 
-    # Find claude
-    CLAUDE=$(find_claude) || die "Claude CLI not found. Install from: https://claude.ai/claude-code"
+    # Resolve selected agent CLI
+    AGENT_CMD=$(resolve_cli_command "$cli_family" "$CLI_CMD_OVERRIDE") || die "Agent CLI '$cli_family' not found. Install it or set CONF_CLI_CMD/--cli-cmd."
 
     # Check requirements
     command -v tmux &> /dev/null || die "tmux required. Install: brew install tmux"
@@ -383,12 +477,11 @@ do_launch() {
 
     [[ ! -f "$path/CLAUDE.md" ]] && die "Not initialized. Run: beehive --init $path"
 
-    # Start persistent beads server for session (avoids per-command start/stop churn)
-    info "Starting beads server..."
-    if (cd "$path" && bd dolt start) 2>/dev/null; then
-        success "  Beads server running"
+    # Beads 1.0+ uses embedded Dolt by default; do not start a persistent server.
+    if (cd "$path" && bd context >/dev/null) 2>/dev/null; then
+        success "  Beads context ready"
     else
-        warn "Could not start persistent beads server (agents will use per-command mode)"
+        warn "Could not validate Beads context (agents will report details from bd prime)"
     fi
 
     # Kill existing
@@ -402,74 +495,136 @@ do_launch() {
     # Create remaining panes (session creation gives us pane 0)
     for (( i=1; i<total_panes; i++ )); do
         tmux split-window -t "$SESSION_NAME:0" -c "$path"
-        tmux select-layout -t "$SESSION_NAME" tiled
     done
+    if [[ "$total_panes" -eq 2 ]]; then
+        tmux select-layout -t "$SESSION_NAME" even-horizontal
+    else
+        tmux select-layout -t "$SESSION_NAME" tiled
+    fi
 
+    # Make tmux preserve rich CLI UIs (Codex/Cursor/Claude) instead of falling back
+    # to a stripped-down terminal style.
+    tmux set-option -t "$SESSION_NAME" -g default-terminal "tmux-256color"
+    tmux set-option -t "$SESSION_NAME" -ga terminal-overrides ",*:Tc"
+    tmux set-option -t "$SESSION_NAME" -g focus-events on
+    tmux set-option -t "$SESSION_NAME" -g aggressive-resize on
+    tmux set-option -t "$SESSION_NAME" -g status on
+    tmux set-option -t "$SESSION_NAME" -g status-position bottom
+    tmux set-option -t "$SESSION_NAME" -g status-style "bg=colour234,fg=colour250"
+    tmux set-option -t "$SESSION_NAME" -g status-left-style "fg=colour220,bold"
+    tmux set-option -t "$SESSION_NAME" -g status-left-length 40
+    tmux set-option -t "$SESSION_NAME" -g status-left " 🐝 #S "
+    tmux set-option -t "$SESSION_NAME" -g status-right-style "fg=colour245"
+    tmux set-option -t "$SESSION_NAME" -g status-right " %H:%M "
+    tmux set-window-option -t "$SESSION_NAME" -g window-status-current-style "bg=colour238,fg=colour220,bold"
+    tmux set-window-option -t "$SESSION_NAME" -g mode-style "bg=colour238,fg=colour220,bold"
     tmux set-option -t "$SESSION_NAME" pane-border-status top
-    tmux set-option -t "$SESSION_NAME" pane-border-format " #T "
+    tmux set-option -t "$SESSION_NAME" pane-border-format " #[fg=colour245]#[fg=colour234,bg=colour245,bold] #T #[fg=colour245,bg=default] "
+    tmux set-option -t "$SESSION_NAME" -g pane-border-style "fg=colour238"
+    tmux set-option -t "$SESSION_NAME" -g pane-active-border-style "fg=colour220,bold"
     tmux set-option -t "$SESSION_NAME" mouse on
     tmux set-option -t "$SESSION_NAME" -g set-clipboard on
     tmux bind-key -T copy-mode MouseDragEnd1Pane send-keys -X copy-pipe-and-cancel "$clip"
     tmux bind-key -T copy-mode-vi MouseDragEnd1Pane send-keys -X copy-pipe-and-cancel "$clip"
 
-    # Stop beads server when tmux session ends
-    local escaped_path
-    printf -v escaped_path '%q' "$path"
-    tmux set-hook -t "$SESSION_NAME" session-closed "run-shell 'cd $escaped_path && bd dolt stop 2>/dev/null || true'"
-
-    # Name panes: bees 0..num_bees-1, queen at num_bees
+    # Name panes: bees 0..num_bees-1, optional queen at num_bees
     for (( i=0; i<num_bees; i++ )); do
         local bee_num=$((i + 1))
         tmux select-pane -t "$SESSION_NAME:0.$i" -T "🐝 Bee $bee_num"
     done
-    tmux select-pane -t "$SESSION_NAME:0.$num_bees" -T "🐝 Queen"
+    if [[ "$launch_queen" == "true" ]]; then
+        tmux select-pane -t "$SESSION_NAME:0.$num_bees" -T "🐝 Queen"
+    fi
 
     # Prompts - agents read their skill files and use bd for coordination
-    local bee_prompt="Read CLAUDE.md and .skills/bee.md. You are Bee %d. Run 'bd prime' for workflow context. Follow your skill instructions. Then check your assignments: run 'bd list --assignee bee-%d'. If you have work, start on the highest priority item. If not, run 'bd ready', claim something, and begin. Use /report for discoveries, /buzz to check in, /bedtime to save state."
+    local bee_prompt="Read CLAUDE.md and .skills/bee.md. You are Bee %d. Run 'bd -C %q prime'. Then run 'bd -C %q list --assignee bee-%d'. If assigned work exists, show the current executable bead and execute it; the bead is the plan. Do not self-dispatch from bd ready, create plans, or mutate live systems without an accepted intention gate. If no assignment or scope is unclear, report idle/blocked or PRE-WORK to Queen. If this CLI rejects slash commands, treat buzz/report/bedtime as named procedures from .skills/.claude/commands and perform the equivalent bd comments/updates directly."
 
-    local queen_prompt="Read CLAUDE.md and .skills/queen.md. You are the Queen. Run 'bd prime' for workflow context. Follow your skill instructions. You work on plans AND coordinate. Use /buzz to consolidate, /session-report at end of session. Wait for user direction."
+    local queen_prompt
+    queen_prompt=$(queen_prompt_text "$path")
 
     # Launch bees with bee_model and BD_ACTOR identity
     for (( i=0; i<num_bees; i++ )); do
         local prompt
         local bee_num=$((i + 1))
         # shellcheck disable=SC2059
-        printf -v prompt "$bee_prompt" "$bee_num" "$bee_num"
+        printf -v prompt "$bee_prompt" "$bee_num" "$path" "$path" "$bee_num"
         local pane_cmd
         pane_cmd=$(build_pane_command "$prompt" "$bee_model" "bee-$bee_num")
         tmux send-keys -t "$SESSION_NAME:0.$i" "$pane_cmd" Enter
         sleep 1
     done
 
-    # Launch queen with queen_model and BD_ACTOR identity
-    local queen_cmd
-    queen_cmd=$(build_pane_command "$queen_prompt" "$queen_model" "queen")
-    tmux send-keys -t "$SESSION_NAME:0.$num_bees" "$queen_cmd" Enter
-    tmux select-pane -t "$SESSION_NAME:0.$num_bees"
+    # Launch optional queen with queen_model and BD_ACTOR identity
+    if [[ "$launch_queen" == "true" ]]; then
+        local queen_cmd
+        queen_cmd=$(build_pane_command "$queen_prompt" "$queen_model" "queen")
+        tmux send-keys -t "$SESSION_NAME:0.$num_bees" "$queen_cmd" Enter
+        tmux select-pane -t "$SESSION_NAME:0.$num_bees"
+    else
+        tmux select-pane -t "$SESSION_NAME:0.0"
+    fi
 
     echo ""
-    success "✓ Launched $total_panes agents ($num_bees bees + Queen)"
+    if [[ "$launch_queen" == "true" ]]; then
+        success "✓ Launched $total_panes agents ($num_bees bees + Queen)"
+    else
+        success "✓ Launched $total_panes agents ($num_bees bees, no Queen)"
+    fi
     echo ""
-    if [[ "$num_bees" -eq 3 ]]; then
-        echo "  ┌──────────┬──────────┐"
-        echo "  │ 🐝 Bee 1 │ 🐝 Bee 2 │"
-        echo "  ├──────────┼──────────┤"
-        echo "  │ 🐝 Bee 3 │ 🐝 Queen │"
-        echo "  └──────────┴──────────┘"
+    if [[ "$num_bees" -eq 2 ]]; then
+        if [[ "$launch_queen" == "true" ]]; then
+            echo "  ┌──────────┬──────────┐"
+            echo "  │ 🐝 Bee 1 │ 🐝 Bee 2 │"
+            echo "  ├──────────┴──────────┤"
+            echo "  │      🐝 Queen       │"
+            echo "  └─────────────────────┘"
+        else
+            echo "  ┌──────────┬──────────┐"
+            echo "  │ 🐝 Bee 1 │ 🐝 Bee 2 │"
+            echo "  └──────────┴──────────┘"
+        fi
+    elif [[ "$num_bees" -eq 3 ]]; then
+        if [[ "$launch_queen" == "true" ]]; then
+            echo "  ┌──────────┬──────────┐"
+            echo "  │ 🐝 Bee 1 │ 🐝 Bee 2 │"
+            echo "  ├──────────┼──────────┤"
+            echo "  │ 🐝 Bee 3 │ 🐝 Queen │"
+            echo "  └──────────┴──────────┘"
+        else
+            echo "  ┌──────────┬──────────┬──────────┐"
+            echo "  │ 🐝 Bee 1 │ 🐝 Bee 2 │ 🐝 Bee 3 │"
+            echo "  └──────────┴──────────┴──────────┘"
+        fi
     elif [[ "$num_bees" -eq 4 ]]; then
-        echo "  ┌──────────┬──────────┐"
-        echo "  │ 🐝 Bee 1 │ 🐝 Bee 2 │"
-        echo "  ├──────────┼──────────┤"
-        echo "  │ 🐝 Bee 3 │ 🐝 Bee 4 │"
-        echo "  ├──────────┴──────────┤"
-        echo "  │      🐝 Queen       │"
-        echo "  └─────────────────────┘"
+        if [[ "$launch_queen" == "true" ]]; then
+            echo "  ┌──────────┬──────────┐"
+            echo "  │ 🐝 Bee 1 │ 🐝 Bee 2 │"
+            echo "  ├──────────┼──────────┤"
+            echo "  │ 🐝 Bee 3 │ 🐝 Bee 4 │"
+            echo "  ├──────────┴──────────┤"
+            echo "  │      🐝 Queen       │"
+            echo "  └─────────────────────┘"
+        else
+            echo "  ┌──────────┬──────────┐"
+            echo "  │ 🐝 Bee 1 │ 🐝 Bee 2 │"
+            echo "  ├──────────┼──────────┤"
+            echo "  │ 🐝 Bee 3 │ 🐝 Bee 4 │"
+            echo "  └──────────┴──────────┘"
+        fi
     elif [[ "$num_bees" -eq 5 ]]; then
-        echo "  ┌──────────┬──────────┬──────────┐"
-        echo "  │ 🐝 Bee 1 │ 🐝 Bee 2 │ 🐝 Bee 3 │"
-        echo "  ├──────────┼──────────┼──────────┤"
-        echo "  │ 🐝 Bee 4 │ 🐝 Bee 5 │ 🐝 Queen │"
-        echo "  └──────────┴──────────┴──────────┘"
+        if [[ "$launch_queen" == "true" ]]; then
+            echo "  ┌──────────┬──────────┬──────────┐"
+            echo "  │ 🐝 Bee 1 │ 🐝 Bee 2 │ 🐝 Bee 3 │"
+            echo "  ├──────────┼──────────┼──────────┤"
+            echo "  │ 🐝 Bee 4 │ 🐝 Bee 5 │ 🐝 Queen │"
+            echo "  └──────────┴──────────┴──────────┘"
+        else
+            echo "  ┌──────────┬──────────┬──────────┐"
+            echo "  │ 🐝 Bee 1 │ 🐝 Bee 2 │ 🐝 Bee 3 │"
+            echo "  ├──────────┴──────────┼──────────┤"
+            echo "  │ 🐝 Bee 4            │ 🐝 Bee 5 │"
+            echo "  └─────────────────────┴──────────┘"
+        fi
     fi
     echo ""
     echo "  Ctrl+B, D  Detach (keeps running)"
@@ -496,7 +651,7 @@ do_upgrade() {
         echo "  Would overwrite:"
         echo "    .skills/bee.md"
         echo "    .skills/queen.md"
-        for cmd in report buzz bedtime session-report deep-plan review; do
+        for cmd in report buzz bedtime session-report deep-plan review board health; do
             [[ -f "$SCRIPT_DIR/commands/$cmd.md" ]] && echo "    .claude/commands/$cmd.md"
         done
         echo "    plans/TEMPLATE.md"
@@ -541,7 +696,7 @@ do_upgrade() {
 
     # Upgrade commands (overwrite)
     mkdir -p "$path/.claude/commands"
-    for cmd in report buzz bedtime session-report deep-plan review; do
+    for cmd in report buzz bedtime session-report deep-plan review board health; do
         [[ -f "$SCRIPT_DIR/commands/$cmd.md" ]] && cp "$SCRIPT_DIR/commands/$cmd.md" "$path/.claude/commands/$cmd.md"
     done
 
@@ -980,25 +1135,21 @@ do_validate() {
 }
 
 #######################################
-# Stop persistent beads server
+# Stop legacy persistent beads server
 #######################################
 do_stop() {
     local path="$1"
     [[ ! -d "$path/.beads" ]] && die "No beads database found in $path"
 
-    info "Stopping beads server..."
-    if (cd "$path" && bd dolt stop) 2>/dev/null; then
-        success "✓ Beads server stopped"
-    else
-        info "No beads server running (nothing to stop)"
-    fi
+    info "Beehive no longer starts a persistent Beads server for Beads 1.0+ embedded mode."
+    info "If a legacy Dolt server is running, stop it manually from the workspace with: bd dolt stop"
 }
 
 usage() {
     cat << EOF
 Usage: beehive [options] [path]
 
-Orchestrate multiple Claude Code agents in tmux.
+Orchestrate multiple CLI-backed coding agents in tmux.
 
 Commands:
     beehive [path]              Launch agents (default: current directory)
@@ -1013,7 +1164,12 @@ Options:
     --model MODEL        Anthropic model override (all agents)
     --bee-model MODEL    Model override for all Bees
     --queen-model MODEL  Model override for Queen
-    --bees N             Number of Bees (3-5, default: 3)
+    --cli NAME           Agent CLI family: claude, codex, cursor (default: claude)
+    --cli-cmd CMD        Explicit command/path for selected CLI
+    --approval-mode MODE Approval handling: auto or manual (default: auto)
+    --bees N             Number of Bees (2-5, default: 3)
+    --no-queen           Launch only Bees; use when Queen runs separately
+    --queen-only         Launch one Queen directly without tmux
     --profile PROF       AWS profile for Bedrock
     --region REGION      AWS region for Bedrock
     --base-url URL       Anthropic API base URL (for API proxies)
@@ -1034,7 +1190,13 @@ Examples:
     beehive --validate           # Check beads health and sessions metadata
     beehive --base-url http://localhost:8090 --api-key sk-ant-xxx --yes
     beehive --queen-model claude-opus-4-6 --bee-model claude-sonnet-4-6
+    beehive --cli codex              # Launch with Codex CLI
+    beehive --cli codex --approval-mode manual
+    beehive --cli cursor             # Launch with Cursor CLI (agent command)
+    beehive --queen-only             # Launch one Queen directly, no tmux
+    beehive --bees 2                 # Launch 2 bees + Queen (3 agents total)
     beehive --bees 5                 # Launch 5 bees + Queen (6 agents total)
+    beehive --bees 2 --no-queen      # Launch 2 bees only; Queen runs elsewhere
 
 EOF
     exit 0
@@ -1055,7 +1217,7 @@ main() {
     local CLI_MODEL_BEE="" CLI_MODEL_QUEEN=""
     local CLI_AWS_PROFILE="" CLI_AWS_REGION=""
     local CLI_ANTHROPIC_BASE_URL="" CLI_ANTHROPIC_API_KEY=""
-    local CLI_BEES=""
+    local CLI_BEES="" CLI_QUEEN="" CLI_QUEEN_ONLY="" CLI_CLI="" CLI_CMD_OVERRIDE="" CLI_APPROVAL_MODE=""
 
     while [[ $# -gt 0 ]]; do
         case "$1" in
@@ -1074,7 +1236,12 @@ main() {
             --region)       [[ -z "${2:-}" || "${2:-}" == -* ]] && die "--region requires a value"; CLI_AWS_REGION="$2"; shift 2 ;;
             --base-url)     [[ -z "${2:-}" ]] && die "--base-url requires a value"; CLI_ANTHROPIC_BASE_URL="$2"; shift 2 ;;
             --api-key)      [[ -z "${2:-}" ]] && die "--api-key requires a value"; CLI_ANTHROPIC_API_KEY="$2"; shift 2 ;;
-            --bees)         [[ -z "${2:-}" || "${2:-}" == -* ]] && die "--bees requires a number (3-5)"; CLI_BEES="$2"; shift 2 ;;
+            --cli)          [[ -z "${2:-}" || "${2:-}" == -* ]] && die "--cli requires one of: claude, codex, cursor"; CLI_CLI="$2"; shift 2 ;;
+            --cli-cmd)      [[ -z "${2:-}" || "${2:-}" == -* ]] && die "--cli-cmd requires a command path/name"; CLI_CMD_OVERRIDE="$2"; shift 2 ;;
+            --approval-mode) [[ -z "${2:-}" || "${2:-}" == -* ]] && die "--approval-mode requires auto or manual"; CLI_APPROVAL_MODE="$2"; shift 2 ;;
+            --bees)         [[ -z "${2:-}" || "${2:-}" == -* ]] && die "--bees requires a number (2-5)"; CLI_BEES="$2"; shift 2 ;;
+            --no-queen)     CLI_QUEEN="false"; shift ;;
+            --queen-only)   CLI_QUEEN_ONLY="true"; shift ;;
             --yes|-y)       skip_confirm=true; shift ;;
             --version)      echo "beehive v$VERSION"; exit 0 ;;
             --help|-h)      usage ;;
@@ -1119,10 +1286,30 @@ main() {
             bee_model=$(resolve_setting "$CLI_MODEL_BEE" "$CLI_MODEL" "$CONF_MODEL_BEE" "$CONF_MODEL")
             queen_model=$(resolve_setting "$CLI_MODEL_QUEEN" "$CLI_MODEL" "$CONF_MODEL_QUEEN" "$CONF_MODEL")
 
-            local num_bees
+            local cli_family
+            cli_family=$(resolve_setting "$CLI_CLI" "" "$CONF_CLI" "claude")
+            [[ "$cli_family" == "claude" || "$cli_family" == "codex" || "$cli_family" == "cursor" ]] || die "--cli/CONF_CLI must be claude, codex, or cursor (got: $cli_family)"
+            CLI_CMD_OVERRIDE=$(resolve_setting "$CLI_CMD_OVERRIDE" "" "$CONF_CLI_CMD" "")
+
+            local approval_mode
+            approval_mode=$(resolve_setting "$CLI_APPROVAL_MODE" "" "$CONF_APPROVAL_MODE" "auto")
+            [[ "$approval_mode" == "auto" || "$approval_mode" == "manual" ]] || die "--approval-mode/CONF_APPROVAL_MODE must be auto or manual (got: $approval_mode)"
+            CLI_FAMILY="$cli_family"
+            APPROVAL_MODE="$approval_mode"
+
+            local num_bees launch_queen queen_only
             num_bees=$(resolve_setting "$CLI_BEES" "" "$CONF_BEES" "3")
-            [[ "$num_bees" =~ ^[3-5]$ ]] || die "--bees must be 3, 4, or 5 (got: $num_bees)"
-            local total_agents=$((num_bees + 1))
+            launch_queen=$(resolve_setting "$CLI_QUEEN" "" "$CONF_QUEEN" "true")
+            queen_only=$(resolve_setting "$CLI_QUEEN_ONLY" "" "" "false")
+            [[ "$queen_only" == "true" || "$queen_only" == "false" ]] || die "--queen-only must resolve to true or false (got: $queen_only)"
+            [[ "$launch_queen" == "true" || "$launch_queen" == "false" ]] || die "--no-queen/CONF_QUEEN must resolve to true or false (got: $launch_queen)"
+            [[ "$queen_only" == "true" && "$launch_queen" == "false" ]] && die "--queen-only cannot be combined with --no-queen"
+            if [[ "$queen_only" != "true" ]]; then
+                [[ "$num_bees" =~ ^[2-5]$ ]] || die "--bees must be 2, 3, 4, or 5 (got: $num_bees)"
+            fi
+            local queen_panes=0
+            [[ "$launch_queen" == "true" ]] && queen_panes=1
+            local total_agents=$((num_bees + queen_panes))
 
             if [[ "$mode" == "workspace" ]]; then
                 info "Mode: Workspace"
@@ -1130,7 +1317,17 @@ main() {
                 info "Mode: Single repo"
             fi
             info "Path: $path"
-            [[ "$num_bees" -ne 3 ]] && info "Agents: $num_bees bees + Queen ($total_agents total)"
+            info "CLI: $cli_family"
+            info "Approval mode: $approval_mode"
+            [[ "$cli_family" == "cursor" && "$approval_mode" == "auto" ]] && warn "Cursor has no verified Beehive auto-approval profile; native Cursor permissions remain in effect"
+            [[ -n "$CLI_CMD_OVERRIDE" ]] && info "CLI command: $CLI_CMD_OVERRIDE"
+            if [[ "$queen_only" == "true" ]]; then
+                info "Agents: Queen only (no tmux)"
+            elif [[ "$launch_queen" == "true" ]]; then
+                [[ "$num_bees" -ne 3 ]] && info "Agents: $num_bees bees + Queen ($total_agents total)"
+            else
+                info "Agents: $num_bees bees, no Queen ($total_agents total)"
+            fi
             if [[ "$bee_model" != "$queen_model" ]] && [[ -n "$bee_model" || -n "$queen_model" ]]; then
                 [[ -n "$bee_model" ]] && info "Bee model: $bee_model"
                 [[ -n "$queen_model" ]] && info "Queen model: $queen_model"
@@ -1145,14 +1342,26 @@ main() {
             echo ""
 
             if ! $skip_confirm; then
-                read -p "Launch $total_agents agents ($num_bees bees + Queen)? [Y/n] " -n 1 -r
+                if [[ "$queen_only" == "true" ]]; then
+                    read -p "Launch Queen only without tmux? [Y/n] " -n 1 -r
+                elif [[ "$launch_queen" == "true" ]]; then
+                    read -p "Launch $total_agents agents ($num_bees bees + Queen)? [Y/n] " -n 1 -r
+                else
+                    read -p "Launch $total_agents agents ($num_bees bees, no Queen)? [Y/n] " -n 1 -r
+                fi
                 echo ""
                 [[ $REPLY =~ ^[Nn]$ ]] && { echo "Aborted."; exit 0; }
             fi
 
-            do_launch "$path" "$bee_model" "$queen_model" "$num_bees"
+            if [[ "$queen_only" == "true" ]]; then
+                do_queen_only "$path" "$queen_model" "$cli_family"
+            else
+                do_launch "$path" "$bee_model" "$queen_model" "$num_bees" "$launch_queen" "$cli_family"
+            fi
             ;;
     esac
 }
 
-main "$@"
+if [[ "${BEEHIVE_SOURCE_ONLY:-false}" != "true" ]]; then
+    main "$@"
+fi

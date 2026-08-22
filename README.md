@@ -1,6 +1,6 @@
 # Beehive
 
-Run a small team of Claude Code agents in tmux.
+Run a small team of CLI-backed coding agents in tmux.
 
 ```text
 ┌──────────┬──────────┐
@@ -10,7 +10,7 @@ Run a small team of Claude Code agents in tmux.
 └──────────┴──────────┘
 ```
 
-**3-5 Bees** do the work. **1 Queen** coordinates. **You** direct the hive.
+**2-5 Bees** do the work. **1 Queen** coordinates. **You** direct the hive.
 
 Beehive works well for:
 - a single repository
@@ -25,12 +25,10 @@ Inspired by [Gas Town](https://steve-yegge.medium.com/welcome-to-gas-town-4f25ee
 | tmux | `brew install tmux` | `sudo apt install tmux` |
 | jq | `brew install jq` | `sudo apt install jq` |
 | [beads](https://github.com/steveyegge/beads) | `brew install steveyegge/tap/beads` | See [beads install](https://github.com/steveyegge/beads#installation) |
-| Claude Code | [Install guide](https://docs.anthropic.com/en/docs/claude-code) | [Install guide](https://docs.anthropic.com/en/docs/claude-code) |
+| Agent CLI | Claude Code, Codex CLI, or Cursor `agent` | Claude Code, Codex CLI, or Cursor `agent` |
 | Clipboard | `pbcopy` (built-in) | `sudo apt install xclip` or `xsel` |
 
-Clipboard support is for tmux copy-mode, so you can mouse-select text in an agent pane and copy it to your system clipboard.
-
-Works best with **Claude Opus 4.6**.
+Clipboard support is for tmux copy-mode, so you can mouse-select text in an agent pane and copy it to your system clipboard. Beehive also configures tmux for `tmux-256color`, truecolor, focus events, styled pane borders, and a compact status bar so Claude/Codex/Cursor terminal UIs keep their richer appearance inside panes.
 
 ## Quick Start
 
@@ -45,8 +43,9 @@ sudo ln -sf ~/beehive/beehive /usr/local/bin/beehive
 cd ~/myproject
 beehive --init
 
-# 3. Optional: configure backend
+# 3. Optional: configure agent CLI and backend
 cat > .beehive.conf << 'EOF'
+CONF_CLI=claude
 CONF_ANTHROPIC_BASE_URL=http://localhost:8090
 CONF_ANTHROPIC_API_KEY=sk-ant-your-key
 EOF
@@ -73,6 +72,8 @@ beehive --init
 
 # 4. Optional: configure backend for the whole workspace
 cat > .beehive.conf << 'EOF'
+CONF_CLI=codex
+CONF_APPROVAL_MODE=auto
 CONF_ANTHROPIC_BASE_URL=http://localhost:8090
 CONF_ANTHROPIC_API_KEY=sk-ant-your-key
 EOF
@@ -83,7 +84,48 @@ beehive
 
 In workspace mode, keep `.beehive.conf` in the workspace root so all panes share the same configuration.
 
-If you use a shared `plans/` directory across several repos, give plans clear repo-prefixed names like `platform-a-auth.md` or `infra-deploy-pipeline.md`.
+## Agent CLI Selection
+
+Use one CLI family per hive launch:
+
+```bash
+beehive --cli claude          # executable: claude
+beehive --cli codex           # executable: codex
+beehive --cli cursor          # executable: agent
+```
+
+Configuration equivalents:
+
+```bash
+CONF_CLI=claude|codex|cursor
+CONF_CLI_CMD=/custom/path      # optional explicit command override
+CONF_APPROVAL_MODE=auto|manual # default: auto
+```
+
+`auto` keeps each CLI's filesystem sandbox and delegates routine approval decisions to its
+built-in reviewer. Claude launches with `--permission-mode auto`; Codex launches with
+`workspace-write`, `on-request`, and `auto_review`. Cursor currently receives no approval
+override because it has no equivalent supported flag. Use `manual` to retain the CLI's normal
+interactive approval behavior.
+
+Beehive never enables unrestricted bypass modes. Automatic CLI approval does not replace the
+Beads intention, mutation, live-system, or human-review gates. Restart the affected Queen or Bee
+session after changing the approval mode.
+
+`--no-queen` remains the mechanism for launching Bees only when Queen runs separately:
+
+```bash
+beehive --cli codex --bees 2 --no-queen
+```
+
+Use `--queen-only` to launch one Queen directly in the current terminal without tmux:
+
+```bash
+beehive --queen-only
+beehive --cli cursor --queen-only
+```
+
+Each pane or direct session receives `BD_ACTOR` (`bee-1`, `bee-2`, ..., `queen`) and a short startup prompt. The detailed operating rules live in `CLAUDE.md`, `.skills/`, `.claude/commands/`, and `bd prime`.
 
 ## What `beehive --init` Creates
 
@@ -127,29 +169,34 @@ practice-workspace/
     └── CLAUDE.md    # added if missing
 ```
 
-Workspace mode is detected automatically when a directory contains multiple sibling git repos.
+Workspace mode is detected automatically when a directory contains multiple sibling git repos. In workspace mode, agents start in the workspace root and move into the relevant repo when needed.
 
-In workspace mode, agents start in the workspace root and move into the relevant repo when needed.
+`plans/` is retained for archive/session metadata compatibility. New work should live in Beads epics and child beads; assigned executable beads are the plan.
 
 ## How It Works
 
-- You tell the Queen what to do
-- The Queen breaks work into plans or tasks
-- Bees pick up work and execute it
-- You review progress and direct traffic between panes
+- The Queen maintains the critical path, dispatch, and verification.
+- Bees execute only assigned executable beads.
+- Bees do not self-dispatch from `bd ready` unless Queen opens a scoped free-pick window.
+- Out-of-scope discoveries are created and related in Beads, then Queen triages them.
+- You review progress and direct traffic between panes.
 
 For most users, that's the important part. Beehive installs the agent instructions and coordination files it needs during `--init`.
 
-## Commands
+## Command Procedures
 
-| Command | Who | Purpose |
-|---------|-----|---------|
-| `/buzz` | Any | Check in and coordinate progress |
-| `/report` | Any | Report out-of-scope discoveries |
-| `/bedtime` | Any | Save state before a break or session end |
-| `/session-report` | Queen | Write end-of-session metadata |
-| `/deep-plan` | Queen | Explore before writing a plan |
-| `/review` | Queen | Strategic project review |
+Claude Code exposes Beehive procedures as slash commands. Codex/Cursor may reject literal slash commands; use the procedure name in natural language instead (for example, “run buzz procedure”) or perform the equivalent `bd` reads/comments/updates from `.claude/commands/<name>.md`.
+
+| Procedure | Claude Code | Who | Purpose |
+|-----------|-------------|-----|---------|
+| `buzz` | `/buzz` | Any | Tactical check-in and coordination refresh |
+| `report` | `/report` | Any | Report out-of-scope discoveries |
+| `bedtime` | `/bedtime` | Any | Save resumable state before a break or session end |
+| `board` | `/board` | Queen | Concise project board and dispatch view |
+| `health` | `/health` | Queen | Beads operating-model health audit |
+| `session-report` | `/session-report` | Queen | Write end-of-session progress metadata |
+| `deep-plan` | `/deep-plan` | Queen | Create/refresh Beads-native epics for unscoped work |
+| `review` | `/review` | Queen | Strategic project review |
 
 ## Configuration
 
@@ -157,8 +204,11 @@ Create `.beehive.conf` in your project or workspace root.
 
 ```bash
 CONF_SESSION=my-session
-CONF_CLAUDE_CMD=/path/to/claude
-CONF_BEES=5
+CONF_CLI=claude              # claude, codex, or cursor
+CONF_CLI_CMD=/path/to/cli    # optional explicit command override
+CONF_APPROVAL_MODE=auto      # auto or manual
+CONF_BEES=2
+CONF_QUEEN=true
 
 CONF_MODEL=claude-opus-4-6
 CONF_MODEL_BEE=claude-sonnet-4-6
@@ -202,7 +252,12 @@ Options:
     --model MODEL
     --bee-model MODEL
     --queen-model MODEL
-    --bees N
+    --cli claude|codex|cursor
+    --cli-cmd CMD
+    --approval-mode MODE       # auto or manual (default: auto)
+    --bees N                    # 2-5
+    --no-queen
+    --queen-only
     --profile PROF
     --region REGION
     --base-url URL
@@ -225,7 +280,7 @@ Options:
 - `jq`: install from the Requirements table above
 - `bd` (beads): install from the Requirements table above
 - `tmux`: install from the Requirements table above
-- `claude`: ensure Claude Code is installed and in your PATH
+- `claude`, `codex`, or `agent`: ensure the selected CLI is installed and in your PATH
 
 **Clipboard not working?**
 - macOS: `pbcopy` should work out of the box

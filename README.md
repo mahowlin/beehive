@@ -187,9 +187,9 @@ Available models are discovered per CLI:
 |-----|--------|
 | claude | `GET /v1/models` when an Anthropic API key is configured, plus the aliases `opus`, `sonnet`, `haiku` |
 | codex | `model = ...` entries in `~/.codex/config.toml` |
-| copilot | `--model` choices from `copilot --help` |
+| copilot | the Copilot models API catalog (same list as the interactive `/model` picker, via the logged-in GitHub token), plus recently used models from `~/.copilot/session-store.db` |
 | agy | `agy models` |
-| vibe | `alias = ...` entries in `.vibe/config.toml` and `~/.vibe/config.toml` |
+| vibe | `alias = ...` entries in `.vibe/config.toml` and `~/.vibe/config.toml` (both `[[models]]` tables and inline `models = [{ alias = ... }]`) |
 | any | `CONF_MODELS_<CLI>` (comma-separated) and the output of `CONF_MODELS_CMD_<CLI>`; `CONF_MODELS`/`CONF_MODELS_CMD` apply to the default CLI |
 
 Usage is read from local CLI logs where available: Claude Code token totals for this project

@@ -103,7 +103,7 @@ beehive --switch-model bee-2 MODEL --cli codex   # move bee-2 to another CLI/sub
 5. Propose the switch (Bee, model, reason, usage snapshot) and wait for user approval before running `--switch-model`.
 6. Record the decision on the bead: `bd comments add <id> "Model: <model> on bee-N — <reason>; usage: <snapshot>"`.
 
-If a CLI's `available` is empty, ask the user which models to use or to set `CONF_MODELS_<CLI>` / `CONF_MODELS_CMD_<CLI>`. Only move a Bee to a CLI with `installed: true`.
+If a CLI's `available` is empty, ask the user which models to use or to set `CONF_MODELS_<CLI>` / `CONF_MODELS_CMD_<CLI>`. Only move a Bee to a CLI with `installed: true`. With the Copilot CLI you can also run `/model` in your own session to see the interactive picker of currently offered models.
 
 ## Control Gates
 

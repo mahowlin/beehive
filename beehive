@@ -1136,14 +1136,54 @@ filter_model_names() {
     done
 }
 
-# Extract `alias = "..."` entries from a Vibe config.toml.
+# Extract `alias = "..."` entries from a Vibe config.toml, both in [[models]]
+# tables (alias on its own line) and inline (`models = [{ alias = "x" }]`).
 vibe_config_aliases() {
     local file="$1"
     [[ -f "$file" ]] || return 0
-    sed -nE 's/^[[:space:]]*alias[[:space:]]*=[[:space:]]*"([^"]+)".*/\1/p' "$file"
+    grep -oE '(^|[^A-Za-z0-9_.-])alias[[:space:]]*=[[:space:]]*"[^"]+"' "$file" 2> /dev/null \
+        | grep -oE '"[^"]+"$' | tr -d '"'
 }
 
-# Extract the `--model` choices from `copilot --help`.
+# Parse the GitHub Copilot models catalog (GET api.githubcopilot.com/models):
+# keep chat models shown in the interactive `/model` picker
+# (model_picker_category: lightweight / versatile / powerful).
+copilot_catalog_parse() {
+    jq -r '.data[]? | select(.capabilities.type == "chat" and (.model_picker_category != null)) | .id' 2> /dev/null
+}
+
+# Fetch the Copilot models catalog using the GitHub OAuth token the user is
+# logged in with (the same token exchange the copilot CLI itself performs).
+# Tokens are only passed to api.github.com via curl headers, never printed.
+copilot_catalog_models() {
+    local oauth_file="${GITHUB_COPILOT_HOME:-$HOME/.config/github-copilot}/oauth.json"
+    local oauth_token cp_token
+    command -v curl &> /dev/null || return 1
+    [[ -f "$oauth_file" ]] || return 1
+    oauth_token=$(jq -r '."https://github.com/login/oauth"[]?.accessToken // empty' "$oauth_file" 2> /dev/null | head -1)
+    [[ -n "$oauth_token" ]] || return 1
+    cp_token=$(curl -sf --max-time 10 \
+        -H "Authorization: token $oauth_token" -H "Accept: application/json" \
+        https://api.github.com/copilot_internal/v2/token 2> /dev/null \
+        | jq -r '.token // empty' 2> /dev/null)
+    [[ -n "$cp_token" ]] || return 1
+    curl -sf --max-time 10 \
+        -H "Authorization: Bearer $cp_token" \
+        -H "Editor-Version: GitHubCopilot/1.0" \
+        -H "Copilot-Integration-Id: vscode-chat" \
+        https://api.githubcopilot.com/models 2> /dev/null | copilot_catalog_parse
+}
+
+# Model IDs used in past Copilot sessions (the "Recent models" section of `/model`).
+copilot_recent_models() {
+    local db="${COPILOT_HOME:-$HOME/.copilot}/session-store.db"
+    command -v sqlite3 &> /dev/null || return 0
+    [[ -f "$db" ]] || return 0
+    sqlite3 "$db" \
+        "select model from assistant_usage_events where model is not null and model != '' group by model order by max(created_at) desc limit 25;" 2> /dev/null
+}
+
+# Legacy fallback: `--model` choices from `copilot --help` (older CLI versions).
 copilot_help_models() {
     local cmd="$1"
     run_with_timeout 15 "$cmd" --help < /dev/null 2> /dev/null \
@@ -1175,6 +1215,12 @@ list_available_models() {
                 | while IFS= read -r m; do printf 'config\t%s\n' "$m"; done
             ;;
         copilot)
+            copilot_catalog_models | while IFS= read -r m; do
+                valid_model_name "$m" && printf 'copilot-api\t%s\n' "$m"
+            done
+            copilot_recent_models | while IFS= read -r m; do
+                valid_model_name "$m" && printf 'recent\t%s\n' "$m"
+            done
             [[ -n "$cli_cmd" ]] && copilot_help_models "$cli_cmd" \
                 | while IFS= read -r m; do printf 'cli\t%s\n' "$m"; done
             ;;

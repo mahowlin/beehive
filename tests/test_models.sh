@@ -15,6 +15,10 @@ assert_contains() { [[ "$1" == *"$2"* ]] || fail "expected output to contain: $2
 
 AWS_PROFILE="" AWS_REGION="" ANTHROPIC_BASE_URL="" ANTHROPIC_API_KEY=""
 CONF_MODELS="" CONF_MODELS_CMD="" CONF_USAGE_CMD=""
+# Isolate copilot discovery from the real login/session store of this machine
+mkdir -p "$TMP/no-ghc" "$TMP/no-copilot"
+GITHUB_COPILOT_HOME="$TMP/no-ghc"
+COPILOT_HOME="$TMP/no-copilot"
 
 # --- model name validation
 valid_model_name "claude-opus-4-6[1m]" || fail "bracket suffix rejected"
@@ -117,7 +121,51 @@ assert_eq "$(resolve_agent_cmd codex)" "codex"
 CONF_CLI_CMD_CODEX="$TMP/bin/copilot"
 assert_eq "$(resolve_agent_cmd codex)" "$TMP/bin/copilot"
 CONF_CLI_CMD_CODEX=""
-if (resolve_agent_cmd agy > /dev/null); then fail "missing CLI resolved"; fi
+if (resolve_agent_cmd no-such-cli > /dev/null); then fail "missing CLI resolved"; fi
+
+# --- vibe aliases: inline table form must be parsed, non-alias keys ignored
+printf 'models = [\n    { thinking = "max", alias = "glm-5-3" },\n]\ndefault_agent = "ask"\nx-alias = "nope"\n' > "$TMP/proj/.vibe/config.toml"
+aliases=$(vibe_config_aliases "$TMP/proj/.vibe/config.toml" | tr '\n' ' ')
+assert_eq "$aliases" "glm-5-3 "
+
+# --- copilot catalog parse: only chat models with a picker category
+cat > "$TMP/catalog.json" <<'JSON'
+{"data":[
+ {"id":"claude-sonnet-5.5","name":"Claude Sonnet 5.5","capabilities":{"type":"chat"},"model_picker_category":"versatile"},
+ {"id":"gpt-6.1-sol","name":"GPT-6.1 Sol","capabilities":{"type":"chat"},"model_picker_category":"powerful"},
+ {"id":"text-embedding-3-small","capabilities":{"type":"embeddings"},"model_picker_category":null},
+ {"id":"gpt-6-luna-decisions","capabilities":{"type":"decisions"},"model_picker_category":null},
+ {"id":"copilot-search-a","capabilities":{"type":"chat"},"model_picker_category":null}
+]}
+JSON
+parsed=$(copilot_catalog_parse < "$TMP/catalog.json" | tr '\n' ' ')
+assert_eq "$parsed" "claude-sonnet-5.5 gpt-6.1-sol "
+
+# --- copilot recent models from the session store
+if command -v sqlite3 >/dev/null; then
+    mkdir -p "$TMP/copilot-home"
+    sqlite3 "$TMP/copilot-home/session-store.db" \
+        "create table assistant_usage_events (model text, created_at text);
+         insert into assistant_usage_events values ('gpt-5.4-mini','2026-01-01'),('claude-opus-5.5','2026-01-02'),('','2026-01-03'),(null,'2026-01-04');"
+    recent=$(COPILOT_HOME="$TMP/copilot-home" copilot_recent_models | tr '\n' ' ')
+    assert_eq "$recent" "claude-opus-5.5 gpt-5.4-mini "
+fi
+
+# --- copilot catalog via API (stubbed curl) feeds list_available_models with source copilot-api
+mkdir -p "$TMP/ghc"
+printf '{"https://github.com/login/oauth":[{"accessToken":"fake-oauth"}]}' > "$TMP/ghc/oauth.json"
+curl() {
+    case "$*" in
+        *copilot_internal*) echo '{"token":"fake-cp-token"}' ;;
+        *api.githubcopilot.com/models*) cat "$TMP/catalog.json" ;;
+        *) return 1 ;;
+    esac
+}
+GITHUB_COPILOT_HOME="$TMP/ghc" COPILOT_HOME="$TMP/no-copilot"
+api_models=$(GITHUB_COPILOT_HOME="$TMP/ghc" COPILOT_HOME="$TMP/no-copilot" list_available_models copilot "$TMP/proj" "" | awk -F'\t' '$1=="copilot-api"{print $2}' | tr '\n' ' ')
+assert_eq "$api_models" "claude-sonnet-5.5 gpt-6.1-sol "
+unset -f curl
+GITHUB_COPILOT_HOME="$TMP/no-ghc"
 
 # --- switch-model restarts only the target pane with the new model
 TMUX_LOG="$TMP/tmux.log"
@@ -162,14 +210,25 @@ assert_contains "$log" "set-option -p -t %1 @beehive_cli_cmd codex"
 assert_contains "$log" "codex --sandbox workspace-write"
 assert_contains "$log" "--model gpt-5.1-codex"
 [[ "$log" != *"ANTHROPIC_MODEL=gpt-5.1-codex"* ]] || fail "codex model passed via ANTHROPIC_MODEL"
-if (do_switch_model "$proj" "hive" "bee-1" "x" "agy" > /dev/null 2>&1); then fail "switch to missing CLI allowed"; fi
+missing_cli=""
+for f in $SUPPORTED_CLIS; do
+    if ! resolve_agent_cmd "$f" > /dev/null 2>&1; then missing_cli="$f"; break; fi
+done
+if [[ -n "$missing_cli" ]] && (do_switch_model "$proj" "hive" "bee-1" "x" "$missing_cli" > /dev/null 2>&1); then
+    fail "switch to missing CLI ($missing_cli) allowed"
+fi
 if (do_switch_model "$proj" "hive" "bee-1" "x" "nope" > /dev/null 2>&1); then fail "unknown CLI allowed"; fi
 
-# --- --models reports every CLI in use plus installed ones
+# --- --models reports every CLI in use plus installed ones (machine-independent)
 JSON_OUTPUT=true
 report=$(CLAUDE_CONFIG_DIR="$TMP/claude" CODEX_HOME="$TMP/codex" do_models "$proj" hive "")
-assert_eq "$(jq -c '[.clis[] | [.cli, .in_use, .installed]]' <<< "$report")" \
-    '[["claude",false,true],["codex",false,true],["copilot",true,true]]'
+assert_eq "$(jq -r '.clis[] | select(.cli=="copilot") | .in_use' <<< "$report")" "true"
+for f in $SUPPORTED_CLIS; do
+    if resolve_agent_cmd "$f" > /dev/null 2>&1; then
+        jq -e --arg f "$f" '.clis[] | select(.cli==$f)' <<< "$report" > /dev/null \
+            || fail "installed CLI $f missing from report"
+    fi
+done
 assert_eq "$(jq -r '.clis[] | select(.cli == "codex") | .usage.builtin.rate_limits.primary.used_percent' <<< "$report")" "37.5"
 
 # --- launch with mixed CLIs sets per-pane CLI, command and model
@@ -189,6 +248,7 @@ grep -q "send-keys -t hive:0.0 .*ANTHROPIC_MODEL=sonnet .*claude --permission-mo
 grep -q "send-keys -t hive:0.2 .*ANTHROPIC_MODEL=opus .*claude --permission-mode auto" "$TMUX_LOG" || fail "queen not launched with claude"
 
 BEE_CLIS=("" claude agy)
-if (do_launch "$TMP/hive" "" "" 2 true claude > /dev/null 2>&1); then fail "launch with missing CLI succeeded"; fi
+# force agy to be unresolvable regardless of what is installed on this machine
+if (CONF_CLI_CMD_AGY=/nonexistent-agy do_launch "$TMP/hive" "" "" 2 true claude > /dev/null 2>&1); then fail "launch with missing CLI succeeded"; fi
 
 echo "model tests passed"

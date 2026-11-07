@@ -143,6 +143,9 @@ resolve_cli_command() {
         cursor)
             command -v agent &> /dev/null && echo "agent" && return 0
             ;;
+        copilot|agy|vibe)
+            command -v "$cli_family" &> /dev/null && echo "$cli_family" && return 0
+            ;;
     esac
     return 1
 }
@@ -184,9 +187,44 @@ resolve_approval_args() {
             # Cursor has no verified equivalent; preserve its native defaults.
             return 0
             ;;
+        copilot)
+            # Auto-approve file edits only; shell and other tools still prompt.
+            printf '%q %q' "--allow-tool" "write"
+            ;;
+        agy)
+            # Auto-accept edits; commands still require approval.
+            printf '%q %q' "--mode" "accept-edits"
+            ;;
+        vibe)
+            # Auto-accept edits; other tool calls still require approval.
+            printf '%q %q' "--agent" "accept-edits"
+            ;;
         *)
             die "Unsupported CLI family for approval mode: $cli_family"
             ;;
+    esac
+}
+
+#######################################
+# Resolve model arguments for CLIs that take the model as a flag.
+# Claude reads ANTHROPIC_MODEL from the environment instead.
+#######################################
+resolve_model_args() {
+    local cli_family="$1" model="$2"
+    [[ -z "$model" ]] && return 0
+    case "$cli_family" in
+        copilot|agy) printf '%q %q' "--model" "$model" ;;
+    esac
+}
+
+#######################################
+# Resolve how the startup prompt is passed while keeping the session interactive.
+#######################################
+resolve_prompt_args() {
+    local cli_family="$1" prompt="$2"
+    case "$cli_family" in
+        copilot|agy) printf '%q %q' "-i" "$prompt" ;;
+        *)           printf '%q' "$prompt" ;;
     esac
 }
 
@@ -201,15 +239,22 @@ build_pane_command() {
     [[ -n "$AWS_REGION" ]] && env_prefix+=" AWS_REGION=$(printf '%q' "$AWS_REGION")"
     [[ -n "$ANTHROPIC_BASE_URL" ]] && env_prefix+=" ANTHROPIC_BASE_URL=$(printf '%q' "$ANTHROPIC_BASE_URL")"
     [[ -n "$ANTHROPIC_API_KEY" ]] && env_prefix+=" ANTHROPIC_API_KEY=$(printf '%q' "$ANTHROPIC_API_KEY")"
-    [[ -n "$model" ]] && env_prefix+=" ANTHROPIC_MODEL=$(printf '%q' "$model")"
-    [[ -n "$actor" ]] && env_prefix+=" BD_ACTOR=$(printf '%q' "$actor")"
-    local approval_args
-    approval_args=$(resolve_approval_args "${CLI_FAMILY:-claude}" "${APPROVAL_MODE:-auto}")
-    if [[ -n "$approval_args" ]]; then
-        printf '%s %q %s %q' "$env_prefix" "$AGENT_CMD" "$approval_args" "$prompt"
-    else
-        printf '%s %q %q' "$env_prefix" "$AGENT_CMD" "$prompt"
+    local cli_family="${CLI_FAMILY:-claude}"
+    if [[ -n "$model" ]]; then
+        case "$cli_family" in
+            vibe) env_prefix+=" VIBE_ACTIVE_MODEL=$(printf '%q' "$model")" ;;
+            copilot|agy) ;;  # passed as --model flag
+            *)    env_prefix+=" ANTHROPIC_MODEL=$(printf '%q' "$model")" ;;
+        esac
     fi
+    [[ -n "$actor" ]] && env_prefix+=" BD_ACTOR=$(printf '%q' "$actor")"
+    local cmd approval_args model_args
+    cmd="$env_prefix $(printf '%q' "$AGENT_CMD")"
+    approval_args=$(resolve_approval_args "$cli_family" "${APPROVAL_MODE:-auto}")
+    model_args=$(resolve_model_args "$cli_family" "$model")
+    [[ -n "$approval_args" ]] && cmd+=" $approval_args"
+    [[ -n "$model_args" ]] && cmd+=" $model_args"
+    printf '%s %s' "$cmd" "$(resolve_prompt_args "$cli_family" "$prompt")"
 }
 
 #######################################
@@ -1164,7 +1209,7 @@ Options:
     --model MODEL        Anthropic model override (all agents)
     --bee-model MODEL    Model override for all Bees
     --queen-model MODEL  Model override for Queen
-    --cli NAME           Agent CLI family: claude, codex, cursor (default: claude)
+    --cli NAME           Agent CLI family: claude, codex, cursor, copilot, agy, vibe (default: claude)
     --cli-cmd CMD        Explicit command/path for selected CLI
     --approval-mode MODE Approval handling: auto or manual (default: auto)
     --bees N             Number of Bees (2-5, default: 3)
@@ -1193,6 +1238,9 @@ Examples:
     beehive --cli codex              # Launch with Codex CLI
     beehive --cli codex --approval-mode manual
     beehive --cli cursor             # Launch with Cursor CLI (agent command)
+    beehive --cli copilot            # Launch with GitHub Copilot CLI
+    beehive --cli agy                # Launch with Antigravity CLI
+    beehive --cli vibe               # Launch with Mistral Vibe CLI
     beehive --queen-only             # Launch one Queen directly, no tmux
     beehive --bees 2                 # Launch 2 bees + Queen (3 agents total)
     beehive --bees 5                 # Launch 5 bees + Queen (6 agents total)
@@ -1236,7 +1284,7 @@ main() {
             --region)       [[ -z "${2:-}" || "${2:-}" == -* ]] && die "--region requires a value"; CLI_AWS_REGION="$2"; shift 2 ;;
             --base-url)     [[ -z "${2:-}" ]] && die "--base-url requires a value"; CLI_ANTHROPIC_BASE_URL="$2"; shift 2 ;;
             --api-key)      [[ -z "${2:-}" ]] && die "--api-key requires a value"; CLI_ANTHROPIC_API_KEY="$2"; shift 2 ;;
-            --cli)          [[ -z "${2:-}" || "${2:-}" == -* ]] && die "--cli requires one of: claude, codex, cursor"; CLI_CLI="$2"; shift 2 ;;
+            --cli)          [[ -z "${2:-}" || "${2:-}" == -* ]] && die "--cli requires one of: claude, codex, cursor, copilot, agy, vibe"; CLI_CLI="$2"; shift 2 ;;
             --cli-cmd)      [[ -z "${2:-}" || "${2:-}" == -* ]] && die "--cli-cmd requires a command path/name"; CLI_CMD_OVERRIDE="$2"; shift 2 ;;
             --approval-mode) [[ -z "${2:-}" || "${2:-}" == -* ]] && die "--approval-mode requires auto or manual"; CLI_APPROVAL_MODE="$2"; shift 2 ;;
             --bees)         [[ -z "${2:-}" || "${2:-}" == -* ]] && die "--bees requires a number (2-5)"; CLI_BEES="$2"; shift 2 ;;
@@ -1288,7 +1336,10 @@ main() {
 
             local cli_family
             cli_family=$(resolve_setting "$CLI_CLI" "" "$CONF_CLI" "claude")
-            [[ "$cli_family" == "claude" || "$cli_family" == "codex" || "$cli_family" == "cursor" ]] || die "--cli/CONF_CLI must be claude, codex, or cursor (got: $cli_family)"
+            case "$cli_family" in
+                claude|codex|cursor|copilot|agy|vibe) ;;
+                *) die "--cli/CONF_CLI must be claude, codex, cursor, copilot, agy, or vibe (got: $cli_family)" ;;
+            esac
             CLI_CMD_OVERRIDE=$(resolve_setting "$CLI_CMD_OVERRIDE" "" "$CONF_CLI_CMD" "")
 
             local approval_mode

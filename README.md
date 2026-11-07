@@ -92,12 +92,15 @@ Use one CLI family per hive launch:
 beehive --cli claude          # executable: claude
 beehive --cli codex           # executable: codex
 beehive --cli cursor          # executable: agent
+beehive --cli copilot         # executable: copilot (GitHub Copilot CLI)
+beehive --cli agy             # executable: agy (Google Antigravity CLI)
+beehive --cli vibe            # executable: vibe (Mistral Vibe CLI)
 ```
 
 Configuration equivalents:
 
 ```bash
-CONF_CLI=claude|codex|cursor
+CONF_CLI=claude|codex|cursor|copilot|agy|vibe
 CONF_CLI_CMD=/custom/path      # optional explicit command override
 CONF_APPROVAL_MODE=auto|manual # default: auto
 ```
@@ -105,8 +108,16 @@ CONF_APPROVAL_MODE=auto|manual # default: auto
 `auto` keeps each CLI's filesystem sandbox and delegates routine approval decisions to its
 built-in reviewer. Claude launches with `--permission-mode auto`; Codex launches with
 `workspace-write`, `on-request`, and `auto_review`. Cursor currently receives no approval
-override because it has no equivalent supported flag. Use `manual` to retain the CLI's normal
-interactive approval behavior.
+override because it has no equivalent supported flag. The edit-only profiles auto-approve file
+edits while shell commands still prompt: Copilot launches with `--allow-tool write`, Antigravity
+with `--mode accept-edits`, and Vibe with `--agent accept-edits`. Use `manual` to retain the
+CLI's normal interactive approval behavior.
+
+Startup prompts are passed positionally for Claude, Codex, Cursor, and Vibe, and via `-i` for
+Copilot and Antigravity so the session stays interactive. Model overrides (`--model`,
+`--bee-model`, `--queen-model`) are passed as `ANTHROPIC_MODEL` for Claude, as `--model` for
+Copilot and Antigravity, and as `VIBE_ACTIVE_MODEL` for Vibe (the model must be an alias from
+your Vibe `config.toml`).
 
 Beehive never enables unrestricted bypass modes. Automatic CLI approval does not replace the
 Beads intention, mutation, live-system, or human-review gates. Restart the affected Queen or Bee
@@ -204,7 +215,7 @@ Create `.beehive.conf` in your project or workspace root.
 
 ```bash
 CONF_SESSION=my-session
-CONF_CLI=claude              # claude, codex, or cursor
+CONF_CLI=claude              # claude, codex, cursor, copilot, agy, or vibe
 CONF_CLI_CMD=/path/to/cli    # optional explicit command override
 CONF_APPROVAL_MODE=auto      # auto or manual
 CONF_BEES=2
@@ -252,7 +263,7 @@ Options:
     --model MODEL
     --bee-model MODEL
     --queen-model MODEL
-    --cli claude|codex|cursor
+    --cli claude|codex|cursor|copilot|agy|vibe
     --cli-cmd CMD
     --approval-mode MODE       # auto or manual (default: auto)
     --bees N                    # 2-5

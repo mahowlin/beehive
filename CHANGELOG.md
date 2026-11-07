@@ -2,6 +2,13 @@
 
 All notable changes to Beehive are documented here.
 
+## Unreleased
+
+### Added
+- `--cli copilot`, `--cli agy`, and `--cli vibe` launch hives with GitHub Copilot CLI, Google Antigravity CLI, and Mistral Vibe CLI.
+- `auto` approval mode uses edit-only profiles for the new CLIs (`--allow-tool write`, `--mode accept-edits`, `--agent accept-edits`); unrestricted modes stay disabled.
+- Model overrides are passed in the form each CLI expects (`--model` for Copilot/Antigravity, `VIBE_ACTIVE_MODEL` for Vibe).
+
 ## v0.5.1 — 2026-03-24
 
 **Agent effectiveness improvements and workspace coordination polish.**

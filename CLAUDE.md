@@ -142,7 +142,8 @@ beehive --yes  # Should show "Bee model: test-bee" and "Queen model: test-queen"
 | `do_validate()` | Run bd doctor + validate session metadata log |
 | `do_launch()` | Set up tmux session with N+1 panes, set BD_ACTOR per pane, store hive metadata as tmux options |
 | `do_models()` | `--models`: per-pane models, available models (`list_available_models()`), usage (`usage_json()`) |
-| `do_switch_model()` | `--switch-model bee-N MODEL`: respawn one Bee pane with a new model |
+| `do_switch_model()` | `--switch-model bee-N MODEL [--cli NAME]`: respawn one Bee pane with a new model/CLI |
+| `resolve_agent_cmd()` | Executable for one CLI family (`--cli-cmd` for default CLI, `CONF_CLI_CMD_<CLI>` otherwise) |
 
 ## Tmux Layout
 

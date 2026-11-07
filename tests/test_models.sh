@@ -77,10 +77,47 @@ printf '{"timestamp":"t","type":"event_msg","payload":{"type":"token_count","inf
 codex_usage=$(CODEX_HOME="$TMP/codex" codex_usage_json)
 assert_eq "$(jq -r '.rate_limits.primary.used_percent' <<< "$codex_usage")" "37.5"
 
-# --- custom usage command (no shell evaluation)
-CONF_USAGE_CMD="printf {\"used\":3}"
+# --- per-CLI custom usage command (no shell evaluation)
+CONF_USAGE_CMD_CURSOR="printf {\"used\":3}"
 assert_eq "$(usage_json cursor "$proj" | jq -c '.custom')" '{"used":3}'
-CONF_USAGE_CMD=""
+assert_eq "$(usage_json copilot "$proj" | jq -c '.custom')" 'null'
+CONF_USAGE_CMD_CURSOR=""
+assert_eq "$(run_usage_cmd "echo 42% used")" '"42% used\n"'
+
+# --- CONF_MODELS applies to the default CLI only; CONF_MODELS_<CLI> to that CLI
+DEFAULT_CLI=claude CONF_MODELS="shared-1" CONF_MODELS_CODEX="gpt-5.1-codex"
+assert_eq "$(CODEX_HOME="$TMP/none" available_models_json codex "$proj" "" | jq -r '[.[].model] | join(",")')" "gpt-5.1-codex"
+assert_contains "$(available_models_json claude "$proj" "" | jq -r '[.[].model] | join(",")')" "shared-1"
+DEFAULT_CLI="" CONF_MODELS="" CONF_MODELS_CODEX=""
+
+# --- config: per-Bee and per-CLI keys are loaded, unknown keys ignored
+mkdir -p "$TMP/conf"
+cat > "$TMP/conf/.beehive.conf" <<'CONF'
+CONF_CLI_BEE_2=codex
+CONF_MODEL_BEE_2=gpt-5.1-codex
+CONF_CLI_QUEEN=claude
+CONF_CLI_CMD_CODEX=/opt/codex
+CONF_USAGE_CMD_CLAUDE=ccusage blocks --json
+CONF_EVIL=1
+CONF_CLI_BEE_9=codex
+CONF
+load_config "$TMP/conf" > /dev/null
+assert_eq "$CONF_CLI_BEE_2|$CONF_MODEL_BEE_2|$CONF_CLI_QUEEN|$CONF_CLI_CMD_CODEX|$CONF_USAGE_CMD_CLAUDE" \
+    "codex|gpt-5.1-codex|claude|/opt/codex|ccusage blocks --json"
+[[ -z "${CONF_EVIL:-}" && -z "${CONF_CLI_BEE_9:-}" ]] || fail "unknown config keys loaded"
+unset CONF_CLI_BEE_2 CONF_MODEL_BEE_2 CONF_CLI_QUEEN CONF_CLI_CMD_CODEX CONF_USAGE_CMD_CLAUDE
+
+# --- command resolution per CLI
+mkdir -p "$TMP/bin"
+for c in claude codex copilot; do printf '#!/bin/bash\n' > "$TMP/bin/$c"; chmod +x "$TMP/bin/$c"; done
+PATH="$TMP/bin:$PATH"
+DEFAULT_CLI=claude CLI_CMD_OVERRIDE="$TMP/bin/claude"
+assert_eq "$(resolve_agent_cmd claude)" "$TMP/bin/claude"
+assert_eq "$(resolve_agent_cmd codex)" "codex"
+CONF_CLI_CMD_CODEX="$TMP/bin/copilot"
+assert_eq "$(resolve_agent_cmd codex)" "$TMP/bin/copilot"
+CONF_CLI_CMD_CODEX=""
+if (resolve_agent_cmd agy > /dev/null); then fail "missing CLI resolved"; fi
 
 # --- switch-model restarts only the target pane with the new model
 TMUX_LOG="$TMP/tmux.log"
@@ -95,7 +132,7 @@ tmux() {
                 @beehive_approval) echo "auto" ;;
                 @beehive_path) echo "$proj" ;;
             esac ;;
-        list-panes) printf '%%1|bee-1|gpt-5-mini\n%%2|bee-2|\n%%3|queen|gpt-5\n' ;;
+        list-panes) printf '%%1|bee-1|copilot|gpt-5-mini|/opt/bin/copilot\n%%2|bee-2|copilot||/opt/bin/copilot\n%%3|queen|||\n' ;;
     esac
 }
 sleep() { :; }
@@ -112,7 +149,46 @@ assert_contains "$log" "BD_ACTOR=bee-2"
 if (do_switch_model "$proj" "hive" "queen" "gpt-5" >/dev/null 2>&1); then fail "queen switch allowed"; fi
 if (do_switch_model "$proj" "hive" "bee-2" 'x;y' >/dev/null 2>&1); then fail "unsafe model allowed"; fi
 
-agents=$(hive_agents_json hive)
-assert_eq "$(jq -c 'map(.actor)' <<< "$agents")" '["bee-1","bee-2","queen"]'
+agents=$(hive_agents_json hive claude /opt/bin/claude)
+assert_eq "$(jq -c 'map([.actor, .cli, .command])' <<< "$agents")" \
+    '[["bee-1","copilot","/opt/bin/copilot"],["bee-2","copilot","/opt/bin/copilot"],["queen","claude","/opt/bin/claude"]]'
+
+# --- switch a Bee to another CLI
+: > "$TMUX_LOG"
+do_switch_model "$proj" "hive" "bee-1" "gpt-5.1-codex" "codex" > /dev/null 2>&1
+log=$(cat "$TMUX_LOG")
+assert_contains "$log" "set-option -p -t %1 @beehive_cli codex"
+assert_contains "$log" "set-option -p -t %1 @beehive_cli_cmd codex"
+assert_contains "$log" "codex --sandbox workspace-write"
+assert_contains "$log" "--model gpt-5.1-codex"
+[[ "$log" != *"ANTHROPIC_MODEL=gpt-5.1-codex"* ]] || fail "codex model passed via ANTHROPIC_MODEL"
+if (do_switch_model "$proj" "hive" "bee-1" "x" "agy" > /dev/null 2>&1); then fail "switch to missing CLI allowed"; fi
+if (do_switch_model "$proj" "hive" "bee-1" "x" "nope" > /dev/null 2>&1); then fail "unknown CLI allowed"; fi
+
+# --- --models reports every CLI in use plus installed ones
+JSON_OUTPUT=true
+report=$(CLAUDE_CONFIG_DIR="$TMP/claude" CODEX_HOME="$TMP/codex" do_models "$proj" hive "")
+assert_eq "$(jq -c '[.clis[] | [.cli, .in_use, .installed]]' <<< "$report")" \
+    '[["claude",false,true],["codex",false,true],["copilot",true,true]]'
+assert_eq "$(jq -r '.clis[] | select(.cli == "codex") | .usage.builtin.rate_limits.primary.used_percent' <<< "$report")" "37.5"
+
+# --- launch with mixed CLIs sets per-pane CLI, command and model
+mkdir -p "$TMP/hive"; touch "$TMP/hive/CLAUDE.md"
+bd() { return 0; }
+: > "$TMUX_LOG"
+SESSION_NAME=hive DEFAULT_CLI=claude CLI_CMD_OVERRIDE="" APPROVAL_MODE=auto QUEEN_CLI=claude
+BEE_CLIS=("" claude codex) BEE_MODELS=("" sonnet gpt-5.1-codex)
+do_launch "$TMP/hive" "sonnet" "opus" 2 true claude > /dev/null 2>&1
+log=$(cat "$TMUX_LOG")
+assert_contains "$log" "set-option -p -t hive:0.0 @beehive_cli claude"
+assert_contains "$log" "set-option -p -t hive:0.1 @beehive_cli codex"
+assert_contains "$log" "set-option -p -t hive:0.1 @beehive_model gpt-5.1-codex"
+assert_contains "$log" "set-option -p -t hive:0.2 @beehive_actor queen"
+grep -q "send-keys -t hive:0.1 .*codex --sandbox workspace-write" "$TMUX_LOG" || fail "bee-2 not launched with codex"
+grep -q "send-keys -t hive:0.0 .*ANTHROPIC_MODEL=sonnet .*claude --permission-mode auto" "$TMUX_LOG" || fail "bee-1 not launched with claude"
+grep -q "send-keys -t hive:0.2 .*ANTHROPIC_MODEL=opus .*claude --permission-mode auto" "$TMUX_LOG" || fail "queen not launched with claude"
+
+BEE_CLIS=("" claude agy)
+if (do_launch "$TMP/hive" "" "" 2 true claude > /dev/null 2>&1); then fail "launch with missing CLI succeeded"; fi
 
 echo "model tests passed"

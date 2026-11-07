@@ -116,8 +116,8 @@ CLI's normal interactive approval behavior.
 Startup prompts are passed positionally for Claude, Codex, Cursor, and Vibe, and via `-i` for
 Copilot and Antigravity so the session stays interactive. Model overrides (`--model`,
 `--bee-model`, `--queen-model`) are passed as `ANTHROPIC_MODEL` for Claude, as `--model` for
-Copilot and Antigravity, and as `VIBE_ACTIVE_MODEL` for Vibe (the model must be an alias from
-your Vibe `config.toml`).
+Codex, Cursor, Copilot, and Antigravity, and as `VIBE_ACTIVE_MODEL` for Vibe (the model must be
+an alias from your Vibe `config.toml`).
 
 Beehive never enables unrestricted bypass modes. Automatic CLI approval does not replace the
 Beads intention, mutation, live-system, or human-review gates. Restart the affected Queen or Bee
@@ -136,18 +136,49 @@ beehive --queen-only
 beehive --cli cursor --queen-only
 ```
 
+### Mixing CLIs and subscriptions
+
+Each agent can run a different CLI, so a hive can spread its work across several subscriptions
+(Claude Pro/Max, ChatGPT, GitHub Copilot, Google, Mistral). Every CLI uses the login you set up
+for it (`claude` → `/login`, `codex login`, `copilot` → `/login`, ...). Do not set
+`--api-key`/`CONF_ANTHROPIC_API_KEY` if Claude Code should use your subscription instead of API
+billing.
+
+```bash
+beehive --bee-cli codex --queen-cli claude   # all Bees on Codex, Queen on Claude Code
+```
+
+```bash
+# .beehive.conf
+CONF_CLI=claude                 # default for every agent
+CONF_CLI_BEE_2=codex            # bee-2 on Codex
+CONF_MODEL_BEE_2=gpt-5.1-codex  # model for bee-2 only
+CONF_CLI_BEE_3=copilot          # bee-3 on Copilot (CLI default model)
+CONF_CLI_QUEEN=claude
+CONF_CLI_CMD_CODEX=/opt/codex/bin/codex   # optional per-CLI executable
+```
+
+Precedence: `CONF_CLI_BEE_N` → `--bee-cli`/`CONF_CLI_BEE` → `--cli`/`CONF_CLI`, and
+`--queen-cli`/`CONF_CLI_QUEEN` → `--cli`/`CONF_CLI`. Model settings shared by several agents
+(`--model`, `CONF_MODEL`) only apply to agents on the default CLI, and `--bee-model`/
+`CONF_MODEL_BEE` only to Bees on the Bee CLI, so a Claude model name never reaches Codex.
+`CONF_MODEL_BEE_N` always applies to its Bee. `--cli-cmd`/`CONF_CLI_CMD` apply to the default CLI;
+use `CONF_CLI_CMD_<CLI>` for the others.
+
 Each pane or direct session receives `BD_ACTOR` (`bee-1`, `bee-2`, ..., `queen`) and a short startup prompt. The detailed operating rules live in `CLAUDE.md`, `.skills/`, `.claude/commands/`, and `bd prime`.
 
 ## Model Selection by the Queen
 
-The Queen can read the hive's models and current usage and restart individual Bees with a
-better-suited model:
+The Queen can read each agent's CLI and model, the models and usage of every CLI in use or
+installed, and restart individual Bees with a better-suited model or on another CLI (and with
+it another subscription):
 
 ```bash
-beehive --models               # per-agent model, available models, usage
+beehive --models               # per-agent CLI/model, models and usage per CLI
 beehive --models --json        # same, machine-readable (used by the Queen)
-beehive --switch-model bee-2 opus      # restart bee-2 with another model
-beehive --switch-model bee-2 default   # back to the CLI default model
+beehive --switch-model bee-2 opus                      # restart bee-2 with another model
+beehive --switch-model bee-2 gpt-5.1-codex --cli codex # move bee-2 to Codex
+beehive --switch-model bee-2 default                   # back to the CLI default model
 ```
 
 Available models are discovered per CLI:
@@ -159,19 +190,20 @@ Available models are discovered per CLI:
 | copilot | `--model` choices from `copilot --help` |
 | agy | `agy models` |
 | vibe | `alias = ...` entries in `.vibe/config.toml` and `~/.vibe/config.toml` |
-| any | `CONF_MODELS` (comma-separated) and the output of `CONF_MODELS_CMD` |
+| any | `CONF_MODELS_<CLI>` (comma-separated) and the output of `CONF_MODELS_CMD_<CLI>`; `CONF_MODELS`/`CONF_MODELS_CMD` apply to the default CLI |
 
 Usage is read from local CLI logs where available: Claude Code token totals for this project
 directory over the last 5 hours and 7 days (`~/.claude/projects/`), and Codex's latest
-account-wide rate-limit snapshot (`~/.codex/sessions/`). For any CLI, `CONF_USAGE_CMD` can
-point to a command whose output (JSON or text) is passed to the Queen, for example
-`CONF_USAGE_CMD=ccusage blocks --active --json`. `CONF_MODELS_CMD` and `CONF_USAGE_CMD` are
-split on whitespace and run without a shell (no pipes or substitutions), with a 20-second timeout.
+account-wide rate-limit snapshot (`~/.codex/sessions/`). For any CLI, `CONF_USAGE_CMD_<CLI>`
+can point to a command whose output (JSON or text) is passed to the Queen, for example
+`CONF_USAGE_CMD_CLAUDE=ccusage blocks --active --json`; `CONF_USAGE_CMD` reports hive-wide usage.
+All `*_CMD` settings are split on whitespace and run without a shell (no pipes or
+substitutions), with a 20-second timeout.
 
 Switching restarts the Bee's CLI in its pane, so its conversation context is lost; Beads state
 is kept. The Queen skill only switches idle or checkpointed Bees, asks the user first, and
 records the decision as a bead comment. The Queen itself is never restarted. Launch settings
-are stored as tmux session options; the API key is not stored and is re-read from
+are stored as tmux session and pane options (relaunch hives started with older versions); the API key is not stored and is re-read from
 `.beehive.conf` or the environment.
 
 ## What `beehive --init` Creates
@@ -254,9 +286,14 @@ CONF_SESSION=my-session
 CONF_CLI=claude              # claude, codex, cursor, copilot, agy, or vibe
 CONF_CLI_CMD=/path/to/cli    # optional explicit command override
 CONF_APPROVAL_MODE=auto      # auto or manual
-CONF_MODELS=opus,sonnet      # optional extra models offered to the Queen
-CONF_MODELS_CMD=             # optional command that prints model names
-CONF_USAGE_CMD=              # optional command that prints usage (JSON or text)
+CONF_CLI_BEE=codex           # optional CLI for all Bees (CONF_CLI_BEE_N for one Bee)
+CONF_CLI_QUEEN=claude        # optional CLI for the Queen
+CONF_MODEL_BEE_2=gpt-5.1-codex  # optional model for one Bee
+CONF_CLI_CMD_CODEX=          # optional executable per CLI
+CONF_MODELS=opus,sonnet      # optional extra models for the default CLI (CONF_MODELS_<CLI> per CLI)
+CONF_MODELS_CMD=             # optional command that prints model names (CONF_MODELS_CMD_<CLI>)
+CONF_USAGE_CMD_CLAUDE=       # optional command that prints usage for one CLI (JSON or text)
+CONF_USAGE_CMD=              # optional command that prints hive-wide usage
 CONF_BEES=2
 CONF_QUEEN=true
 
@@ -304,8 +341,10 @@ Options:
     --queen-model MODEL
     --cli claude|codex|cursor|copilot|agy|vibe
     --cli-cmd CMD
-    --models                    # show models + usage (add --json)
-    --switch-model bee-N MODEL  # restart one Bee with another model
+    --bee-cli NAME              # CLI for all Bees
+    --queen-cli NAME            # CLI for the Queen
+    --models                    # show CLIs, models + usage (add --json)
+    --switch-model bee-N MODEL [--cli NAME]  # restart one Bee with another model/CLI
     --approval-mode MODE       # auto or manual (default: auto)
     --bees N                    # 2-5
     --no-queen

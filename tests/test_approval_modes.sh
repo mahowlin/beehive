@@ -81,6 +81,11 @@ vibe_model=$(build_pane_command "p" "devstral-2" "queen")
 assert_contains "$vibe_model" "VIBE_ACTIVE_MODEL=devstral-2"
 assert_not_contains "$vibe_model" "ANTHROPIC_MODEL"
 
+CLI_FAMILY=codex AGENT_CMD=/opt/bin/codex
+codex_model=$(build_pane_command "p" "gpt-5.1-codex" "bee-1")
+assert_contains "$codex_model" "--model gpt-5.1-codex"
+assert_not_contains "$codex_model" "ANTHROPIC_MODEL"
+
 CLI_FAMILY=claude AGENT_CMD=/opt/bin/claude
 claude_model=$(build_pane_command "p" "claude-opus-4-6" "queen")
 assert_contains "$claude_model" "ANTHROPIC_MODEL=claude-opus-4-6"

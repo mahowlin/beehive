@@ -138,6 +138,42 @@ beehive --cli cursor --queen-only
 
 Each pane or direct session receives `BD_ACTOR` (`bee-1`, `bee-2`, ..., `queen`) and a short startup prompt. The detailed operating rules live in `CLAUDE.md`, `.skills/`, `.claude/commands/`, and `bd prime`.
 
+## Model Selection by the Queen
+
+The Queen can read the hive's models and current usage and restart individual Bees with a
+better-suited model:
+
+```bash
+beehive --models               # per-agent model, available models, usage
+beehive --models --json        # same, machine-readable (used by the Queen)
+beehive --switch-model bee-2 opus      # restart bee-2 with another model
+beehive --switch-model bee-2 default   # back to the CLI default model
+```
+
+Available models are discovered per CLI:
+
+| CLI | Source |
+|-----|--------|
+| claude | `GET /v1/models` when an Anthropic API key is configured, plus the aliases `opus`, `sonnet`, `haiku` |
+| codex | `model = ...` entries in `~/.codex/config.toml` |
+| copilot | `--model` choices from `copilot --help` |
+| agy | `agy models` |
+| vibe | `alias = ...` entries in `.vibe/config.toml` and `~/.vibe/config.toml` |
+| any | `CONF_MODELS` (comma-separated) and the output of `CONF_MODELS_CMD` |
+
+Usage is read from local CLI logs where available: Claude Code token totals for this project
+directory over the last 5 hours and 7 days (`~/.claude/projects/`), and Codex's latest
+account-wide rate-limit snapshot (`~/.codex/sessions/`). For any CLI, `CONF_USAGE_CMD` can
+point to a command whose output (JSON or text) is passed to the Queen, for example
+`CONF_USAGE_CMD=ccusage blocks --active --json`. `CONF_MODELS_CMD` and `CONF_USAGE_CMD` are
+split on whitespace and run without a shell (no pipes or substitutions), with a 20-second timeout.
+
+Switching restarts the Bee's CLI in its pane, so its conversation context is lost; Beads state
+is kept. The Queen skill only switches idle or checkpointed Bees, asks the user first, and
+records the decision as a bead comment. The Queen itself is never restarted. Launch settings
+are stored as tmux session options; the API key is not stored and is re-read from
+`.beehive.conf` or the environment.
+
 ## What `beehive --init` Creates
 
 Beehive installs its working files into your repo or workspace.
@@ -218,6 +254,9 @@ CONF_SESSION=my-session
 CONF_CLI=claude              # claude, codex, cursor, copilot, agy, or vibe
 CONF_CLI_CMD=/path/to/cli    # optional explicit command override
 CONF_APPROVAL_MODE=auto      # auto or manual
+CONF_MODELS=opus,sonnet      # optional extra models offered to the Queen
+CONF_MODELS_CMD=             # optional command that prints model names
+CONF_USAGE_CMD=              # optional command that prints usage (JSON or text)
 CONF_BEES=2
 CONF_QUEEN=true
 
@@ -265,6 +304,8 @@ Options:
     --queen-model MODEL
     --cli claude|codex|cursor|copilot|agy|vibe
     --cli-cmd CMD
+    --models                    # show models + usage (add --json)
+    --switch-model bee-N MODEL  # restart one Bee with another model
     --approval-mode MODE       # auto or manual (default: auto)
     --bees N                    # 2-5
     --no-queen

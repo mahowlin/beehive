@@ -99,6 +99,9 @@ load_config() {
             CONF_BEES)                CONF_BEES="$value" ;;
             CONF_QUEEN)               CONF_QUEEN="$value" ;;
             CONF_AGENT_CMD)           CONF_CLI_CMD="$value" ;;
+            CONF_MODELS)              CONF_MODELS="$value" ;;
+            CONF_MODELS_CMD)          CONF_MODELS_CMD="$value" ;;
+            CONF_USAGE_CMD)           CONF_USAGE_CMD="$value" ;;
         esac
     done < "$config_path"
     return 0
@@ -461,9 +464,14 @@ init_workspace() {
     echo "  Run: beehive $dir"
 }
 
+bee_prompt_text() {
+    local bee_num="$1" path="$2"
+    printf "Read CLAUDE.md and .skills/bee.md. You are Bee %d. Run 'bd -C %q prime'. Then run 'bd -C %q list --assignee bee-%d'. If assigned work exists, show the current executable bead and execute it; the bead is the plan. Do not self-dispatch from bd ready, create plans, or mutate live systems without an accepted intention gate. If no assignment or scope is unclear, report idle/blocked or PRE-WORK to Queen. If this CLI rejects slash commands, treat buzz/report/bedtime as named procedures from .skills/.claude/commands and perform the equivalent bd comments/updates directly." "$bee_num" "$path" "$path" "$bee_num"
+}
+
 queen_prompt_text() {
     local path="$1"
-    printf "Read CLAUDE.md and .skills/queen.md. You are the Queen. Run 'bd -C %q prime' for workflow context. Follow your skill instructions. You own super-swarms, critical path, Bee slot state, and dispatch; Bees own scoped swarms. Use buzz for tactical dispatch refresh and session-report for maturity/unlocks/roadblocks. If this CLI rejects slash commands, treat buzz/board/health/report/bedtime/session-report/deep-plan/review as named procedures from .skills/.claude/commands and perform the equivalent bd comments/updates directly. Wait for user direction." "$path"
+    printf "Read CLAUDE.md and .skills/queen.md. You are the Queen. Run 'bd -C %q prime' for workflow context. Follow your skill instructions. You own super-swarms, critical path, Bee slot state, and dispatch; Bees own scoped swarms. Use buzz for tactical dispatch refresh and session-report for maturity/unlocks/roadblocks. If this CLI rejects slash commands, treat buzz/board/health/report/bedtime/session-report/deep-plan/review as named procedures from .skills/.claude/commands and perform the equivalent bd comments/updates directly. For model selection run '%q --models --json' (models, per-Bee model, usage) and, after user approval, '%q --switch-model bee-N MODEL'. Wait for user direction." "$path" "$BEEHIVE_BIN" "$BEEHIVE_BIN"
 }
 
 #######################################
@@ -572,6 +580,15 @@ do_launch() {
     tmux bind-key -T copy-mode MouseDragEnd1Pane send-keys -X copy-pipe-and-cancel "$clip"
     tmux bind-key -T copy-mode-vi MouseDragEnd1Pane send-keys -X copy-pipe-and-cancel "$clip"
 
+    # Hive metadata for --models / --switch-model (no secrets stored)
+    tmux set-option -t "$SESSION_NAME" @beehive_cli "$cli_family"
+    tmux set-option -t "$SESSION_NAME" @beehive_cli_cmd "$AGENT_CMD"
+    tmux set-option -t "$SESSION_NAME" @beehive_approval "${APPROVAL_MODE:-auto}"
+    tmux set-option -t "$SESSION_NAME" @beehive_path "$path"
+    tmux set-option -t "$SESSION_NAME" @beehive_aws_profile "$AWS_PROFILE"
+    tmux set-option -t "$SESSION_NAME" @beehive_aws_region "$AWS_REGION"
+    tmux set-option -t "$SESSION_NAME" @beehive_base_url "$ANTHROPIC_BASE_URL"
+
     # Name panes: bees 0..num_bees-1, optional queen at num_bees
     for (( i=0; i<num_bees; i++ )); do
         local bee_num=$((i + 1))
@@ -582,8 +599,6 @@ do_launch() {
     fi
 
     # Prompts - agents read their skill files and use bd for coordination
-    local bee_prompt="Read CLAUDE.md and .skills/bee.md. You are Bee %d. Run 'bd -C %q prime'. Then run 'bd -C %q list --assignee bee-%d'. If assigned work exists, show the current executable bead and execute it; the bead is the plan. Do not self-dispatch from bd ready, create plans, or mutate live systems without an accepted intention gate. If no assignment or scope is unclear, report idle/blocked or PRE-WORK to Queen. If this CLI rejects slash commands, treat buzz/report/bedtime as named procedures from .skills/.claude/commands and perform the equivalent bd comments/updates directly."
-
     local queen_prompt
     queen_prompt=$(queen_prompt_text "$path")
 
@@ -591,10 +606,11 @@ do_launch() {
     for (( i=0; i<num_bees; i++ )); do
         local prompt
         local bee_num=$((i + 1))
-        # shellcheck disable=SC2059
-        printf -v prompt "$bee_prompt" "$bee_num" "$path" "$path" "$bee_num"
+        prompt=$(bee_prompt_text "$bee_num" "$path")
         local pane_cmd
         pane_cmd=$(build_pane_command "$prompt" "$bee_model" "bee-$bee_num")
+        tmux set-option -p -t "$SESSION_NAME:0.$i" @beehive_actor "bee-$bee_num"
+        tmux set-option -p -t "$SESSION_NAME:0.$i" @beehive_model "$bee_model"
         tmux send-keys -t "$SESSION_NAME:0.$i" "$pane_cmd" Enter
         sleep 1
     done
@@ -603,6 +619,8 @@ do_launch() {
     if [[ "$launch_queen" == "true" ]]; then
         local queen_cmd
         queen_cmd=$(build_pane_command "$queen_prompt" "$queen_model" "queen")
+        tmux set-option -p -t "$SESSION_NAME:0.$num_bees" @beehive_actor "queen"
+        tmux set-option -p -t "$SESSION_NAME:0.$num_bees" @beehive_model "$queen_model"
         tmux send-keys -t "$SESSION_NAME:0.$num_bees" "$queen_cmd" Enter
         tmux select-pane -t "$SESSION_NAME:0.$num_bees"
     else
@@ -1017,6 +1035,329 @@ _migrate_markdown_to_beads() {
 }
 
 #######################################
+# Models & usage (dynamic Queen model selection)
+#######################################
+MODEL_NAME_RE='^[A-Za-z0-9][A-Za-z0-9._:/@+-]*(\[[A-Za-z0-9]+\])?$'
+BEEHIVE_BIN="$SCRIPT_DIR/$(basename "$SCRIPT_SOURCE")"
+
+valid_model_name() {
+    [[ "$1" =~ $MODEL_NAME_RE ]]
+}
+
+run_with_timeout() {
+    local secs="$1"; shift
+    if command -v timeout &> /dev/null; then
+        timeout "$secs" "$@"
+    else
+        "$@"
+    fi
+}
+
+# Run a command configured in .beehive.conf without a shell (no pipes, no substitution).
+run_config_command() {
+    local -a argv
+    read -ra argv <<< "$1"
+    [[ ${#argv[@]} -gt 0 ]] || return 1
+    run_with_timeout 20 "${argv[@]}" < /dev/null 2> /dev/null
+}
+
+# Keep only the first field of lines that look like model identifiers.
+# Requires a digit or separator so headers like "Available" are dropped.
+filter_model_names() {
+    local line name
+    while IFS= read -r line; do
+        name=$(printf '%s' "$line" | sed -E 's/^[[:space:]*>-]+//' | awk '{print $1}' | tr -d '",')
+        [[ -z "$name" ]] && continue
+        [[ "$name" =~ [-._:/0-9] ]] || continue
+        valid_model_name "$name" && printf '%s\n' "$name"
+    done
+}
+
+# Extract `alias = "..."` entries from a Vibe config.toml.
+vibe_config_aliases() {
+    local file="$1"
+    [[ -f "$file" ]] || return 0
+    sed -nE 's/^[[:space:]]*alias[[:space:]]*=[[:space:]]*"([^"]+)".*/\1/p' "$file"
+}
+
+# Extract the `--model` choices from `copilot --help`.
+copilot_help_models() {
+    local cmd="$1"
+    run_with_timeout 15 "$cmd" --help < /dev/null 2> /dev/null \
+        | tr '\n' ' ' \
+        | sed -nE 's/.*--model[^(]*\(choices:([^)]*)\).*/\1/p' \
+        | grep -oE '"[^"]+"' | tr -d '"'
+}
+
+# Print "source<TAB>model" lines for every model Beehive can discover.
+list_available_models() {
+    local cli_family="$1" path="$2" cli_cmd="$3"
+    local m
+
+    case "$cli_family" in
+        claude)
+            if [[ -n "${ANTHROPIC_API_KEY:-}" ]] && command -v curl &> /dev/null; then
+                curl -sf --max-time 10 \
+                    -H @<(printf 'x-api-key: %s\n' "$ANTHROPIC_API_KEY") \
+                    -H "anthropic-version: 2023-06-01" \
+                    "${ANTHROPIC_BASE_URL:-https://api.anthropic.com}/v1/models?limit=100" 2> /dev/null \
+                    | jq -r '.data[]?.id // empty' 2> /dev/null \
+                    | while IFS= read -r m; do printf 'api\t%s\n' "$m"; done
+            fi
+            printf 'alias\t%s\n' opus sonnet haiku
+            ;;
+        codex)
+            sed -nE 's/^[[:space:]]*model[[:space:]]*=[[:space:]]*"([^"]+)".*/\1/p' \
+                "${CODEX_HOME:-$HOME/.codex}/config.toml" 2> /dev/null \
+                | while IFS= read -r m; do printf 'config\t%s\n' "$m"; done
+            ;;
+        copilot)
+            [[ -n "$cli_cmd" ]] && copilot_help_models "$cli_cmd" \
+                | while IFS= read -r m; do printf 'cli\t%s\n' "$m"; done
+            ;;
+        agy)
+            [[ -n "$cli_cmd" ]] && run_with_timeout 20 "$cli_cmd" models < /dev/null 2> /dev/null \
+                | filter_model_names \
+                | while IFS= read -r m; do printf 'cli\t%s\n' "$m"; done
+            ;;
+        vibe)
+            { vibe_config_aliases "$path/.vibe/config.toml"
+              vibe_config_aliases "${VIBE_HOME:-$HOME/.vibe}/config.toml"; } \
+                | while IFS= read -r m; do printf 'config\t%s\n' "$m"; done
+            ;;
+    esac
+
+    # User-provided lists work for every CLI (cursor relies on these).
+    if [[ -n "${CONF_MODELS:-}" ]]; then
+        printf '%s\n' "$CONF_MODELS" | tr ', ' '\n\n' | while IFS= read -r m; do
+            [[ -n "$m" ]] && valid_model_name "$m" && printf 'beehive.conf\t%s\n' "$m"
+        done
+    fi
+    if [[ -n "${CONF_MODELS_CMD:-}" ]]; then
+        run_config_command "$CONF_MODELS_CMD" | filter_model_names \
+            | while IFS= read -r m; do printf 'models_cmd\t%s\n' "$m"; done
+    fi
+    return 0
+}
+
+available_models_json() {
+    list_available_models "$@" | jq -R -s -c '
+        split("\n") | map(select(length > 0) | split("\t") | {source: .[0], model: .[1]})
+        | unique_by(.model)'
+}
+
+# Token usage of Claude Code sessions that ran in this project directory,
+# aggregated per model for the rolling 5-hour and 7-day windows.
+claude_usage_json() {
+    local path="$1"
+    local slug dir
+    slug=$(printf '%s' "$path" | sed 's/[^A-Za-z0-9]/-/g')
+    dir="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/projects/$slug"
+    [[ -d "$dir" ]] || return 1
+
+    find "$dir" -name '*.jsonl' -mtime -8 -print0 2> /dev/null \
+        | xargs -0 -r cat 2> /dev/null \
+        | jq -R -c 'fromjson? | select(.type == "assistant" and .message.usage != null and .timestamp != null)
+            | {id: ((.message.id // "") + ":" + (.requestId // "")),
+               ts: (.timestamp | sub("\\.[0-9]+"; "") | fromdateiso8601),
+               model: (.message.model // "unknown"),
+               u: .message.usage}' \
+        | jq -s -c --argjson now "$(date +%s)" '
+            def agg(since):
+                map(select(.ts >= since)) | group_by(.model) | map({
+                    model: .[0].model,
+                    messages: length,
+                    input_tokens: (map(.u.input_tokens // 0) | add),
+                    output_tokens: (map(.u.output_tokens // 0) | add),
+                    cache_read_tokens: (map(.u.cache_read_input_tokens // 0) | add),
+                    cache_creation_tokens: (map(.u.cache_creation_input_tokens // 0) | add)
+                });
+            unique_by(.id)
+            | {source: "claude-code-logs", scope: "this project directory",
+               window_5h: agg($now - 18000), window_7d: agg($now - 604800)}'
+}
+
+# Latest account-wide rate-limit snapshot recorded by Codex.
+codex_usage_json() {
+    local dir="${CODEX_HOME:-$HOME/.codex}/sessions"
+    [[ -d "$dir" ]] || return 1
+    local file snapshot
+    while IFS= read -r file; do
+        snapshot=$(jq -R -c 'fromjson? | select(.type == "event_msg" and .payload.type == "token_count" and .payload.rate_limits != null)
+                | {timestamp, rate_limits: .payload.rate_limits, total_token_usage: .payload.info.total_token_usage}' \
+            "$file" 2> /dev/null | tail -1)
+        if [[ -n "$snapshot" ]]; then
+            jq -c '{source: "codex-session-logs", scope: "account"} + .' <<< "$snapshot"
+            return 0
+        fi
+    done < <(find "$dir" -name 'rollout-*.jsonl' -mtime -8 -print0 2> /dev/null | xargs -0 -r ls -t 2> /dev/null | head -5)
+    return 1
+}
+
+usage_json() {
+    local cli_family="$1" path="$2"
+    local cli_usage="null" custom="null" out
+    case "$cli_family" in
+        claude) out=$(claude_usage_json "$path") && [[ -n "$out" ]] && cli_usage="$out" ;;
+        codex)  out=$(codex_usage_json) && [[ -n "$out" ]] && cli_usage="$out" ;;
+    esac
+    if [[ -n "${CONF_USAGE_CMD:-}" ]]; then
+        out=$(run_config_command "$CONF_USAGE_CMD" | head -c 8000)
+        if [[ -n "$out" ]]; then
+            if jq -e . > /dev/null 2>&1 <<< "$out"; then
+                custom=$(jq -c . <<< "$out")
+            else
+                custom=$(jq -R -s -c . <<< "$out")
+            fi
+        fi
+    fi
+    jq -n -c --argjson cli "$cli_usage" --argjson custom "$custom" '{cli: $cli, custom: $custom}'
+}
+
+# Session name: explicit --session, the tmux session we run in, config, or folder name.
+resolve_hive_session() {
+    local path="$1" explicit="$2"
+    if [[ -n "$explicit" ]]; then echo "$explicit"; return 0; fi
+    if [[ -n "${TMUX:-}" ]] && command -v tmux &> /dev/null; then
+        local current
+        current=$(tmux display-message -p '#S' 2> /dev/null || true)
+        if [[ -n "$current" && -n "$(tmux show-options -t "$current" -v -q @beehive_cli 2> /dev/null)" ]]; then
+            echo "$current"; return 0
+        fi
+    fi
+    resolve_setting "" "" "${CONF_SESSION:-}" "$(basename "$path")"
+}
+
+hive_option() {
+    tmux show-options -t "$1" -v -q "$2" 2> /dev/null || true
+}
+
+hive_agents_json() {
+    local session="$1"
+    command -v tmux &> /dev/null && tmux has-session -t "$session" 2> /dev/null || { echo "[]"; return 0; }
+    # tmux sanitizes tabs in format output, so use "|" (never valid in actor or model names)
+    tmux list-panes -s -t "$session" -F '#{pane_id}|#{@beehive_actor}|#{@beehive_model}' 2> /dev/null \
+        | jq -R -s -c 'split("\n") | map(select(length > 0) | split("|")
+            | select((.[1] // "") != "") | {pane: .[0], actor: .[1], model: (.[2] // "")})'
+}
+
+#######################################
+# beehive --models: agents, available models, usage
+#######################################
+do_models() {
+    local path="$1" session_arg="$2" cli_arg="$3"
+    path=$(cd "$path" && pwd -P)
+    load_config "$path" > /dev/null || true
+
+    local session cli_family cli_cmd
+    session=$(resolve_hive_session "$path" "$session_arg")
+    cli_family=$(hive_option "$session" @beehive_cli)
+    [[ -z "$cli_family" ]] && cli_family=$(resolve_setting "$cli_arg" "" "${CONF_CLI:-}" "claude")
+    cli_cmd=$(hive_option "$session" @beehive_cli_cmd)
+    [[ -z "$cli_cmd" ]] && cli_cmd=$(resolve_cli_command "$cli_family" "${CONF_CLI_CMD:-}" || true)
+    [[ -z "${ANTHROPIC_API_KEY:-}" ]] && ANTHROPIC_API_KEY="${CONF_ANTHROPIC_API_KEY:-}"
+    [[ -z "${ANTHROPIC_BASE_URL:-}" ]] && ANTHROPIC_BASE_URL="${CONF_ANTHROPIC_BASE_URL:-}"
+
+    local agents available usage report
+    agents=$(hive_agents_json "$session")
+    available=$(available_models_json "$cli_family" "$path" "$cli_cmd")
+    usage=$(usage_json "$cli_family" "$path")
+    report=$(jq -n -c --arg cli "$cli_family" --arg session "$session" --arg path "$path" \
+        --argjson agents "$agents" --argjson available "$available" --argjson usage "$usage" \
+        '{cli: $cli, session: $session, path: $path, agents: $agents, available: $available, usage: $usage}')
+
+    if $JSON_OUTPUT; then
+        jq . <<< "$report"
+        return 0
+    fi
+
+    echo ""
+    info "Hive models ($cli_family, session: $session)"
+    echo ""
+    echo "Agents:"
+    jq -r 'if (.agents | length) == 0 then "  (no running hive session found)"
+           else .agents[] | "  \(.actor)\t\(if .model == "" then "(CLI default)" else .model end)" end' <<< "$report"
+    echo ""
+    echo "Available models:"
+    jq -r 'if (.available | length) == 0 then "  (none discovered; set CONF_MODELS or CONF_MODELS_CMD)"
+           else .available[] | "  \(.model)\t[\(.source)]" end' <<< "$report"
+    echo ""
+    echo "Usage:"
+    jq -r '
+        if .usage.cli == null and .usage.custom == null then "  (no usage data; set CONF_USAGE_CMD for this CLI)"
+        else
+          (if .usage.cli.window_5h then
+             "  Last 5h (\(.usage.cli.scope)):",
+             (.usage.cli.window_5h[] | "    \(.model): \(.messages) msgs, in \(.input_tokens), out \(.output_tokens), cache read \(.cache_read_tokens)"),
+             "  Last 7d:",
+             (.usage.cli.window_7d[] | "    \(.model): \(.messages) msgs, in \(.input_tokens), out \(.output_tokens), cache read \(.cache_read_tokens)")
+           elif .usage.cli.rate_limits then
+             (.usage.cli.rate_limits | to_entries[] | select(.value | type == "object")
+               | "  \(.key): \(.value.used_percent // "?")% used (window \(.value.window_minutes // "?") min)")
+           else empty end),
+          (if .usage.custom != null then "  Custom: \(.usage.custom | if type == "string" then . else tojson end)" else empty end)
+        end' <<< "$report"
+    echo ""
+}
+
+#######################################
+# beehive --switch-model bee-N MODEL: restart one Bee with another model
+#######################################
+do_switch_model() {
+    local path="$1" session_arg="$2" actor="$3" model="$4"
+    path=$(cd "$path" && pwd -P)
+    load_config "$path" > /dev/null || true
+
+    [[ "$actor" =~ ^bee-([0-9]+)$ ]] || die "--switch-model only restarts Bees (bee-N); got: $actor"
+    local bee_num="${BASH_REMATCH[1]}"
+    [[ "$model" == "default" ]] && model=""
+    if [[ -n "$model" ]]; then
+        valid_model_name "$model" || die "Invalid model name: $model"
+    fi
+
+    command -v tmux &> /dev/null || die "tmux required"
+    local session
+    session=$(resolve_hive_session "$path" "$session_arg")
+    tmux has-session -t "$session" 2> /dev/null || die "No running hive session '$session'"
+
+    CLI_FAMILY=$(hive_option "$session" @beehive_cli)
+    [[ -n "$CLI_FAMILY" ]] || die "Session '$session' has no Beehive metadata. Relaunch it with this beehive version."
+    AGENT_CMD=$(hive_option "$session" @beehive_cli_cmd)
+    APPROVAL_MODE=$(hive_option "$session" @beehive_approval)
+    AWS_PROFILE=$(hive_option "$session" @beehive_aws_profile)
+    AWS_REGION=$(hive_option "$session" @beehive_aws_region)
+    ANTHROPIC_BASE_URL=$(hive_option "$session" @beehive_base_url)
+    ANTHROPIC_API_KEY="${ANTHROPIC_API_KEY:-${CONF_ANTHROPIC_API_KEY:-}}"
+    local hive_path
+    hive_path=$(hive_option "$session" @beehive_path)
+    [[ -n "$hive_path" ]] && path="$hive_path"
+
+    local pane
+    pane=$(hive_agents_json "$session" | jq -r --arg a "$actor" 'map(select(.actor == $a)) | .[0].pane // empty')
+    [[ -n "$pane" ]] || die "No pane for $actor in session '$session'"
+
+    if [[ -n "$model" ]]; then
+        local known
+        known=$(available_models_json "$CLI_FAMILY" "$path" "$AGENT_CMD")
+        if [[ "$(jq 'length' <<< "$known")" -gt 0 ]] && ! jq -e --arg m "$model" 'any(.[]; .model == $m)' <<< "$known" > /dev/null; then
+            warn "Model '$model' was not in the discovered model list for $CLI_FAMILY; launching anyway"
+        fi
+    fi
+
+    local prompt pane_cmd
+    prompt="$(bee_prompt_text "$bee_num" "$path") Queen restarted you with model '${model:-CLI default}'; resume from the latest checkpoint comment on your assigned bead."
+    pane_cmd=$(build_pane_command "$prompt" "$model" "$actor")
+
+    tmux respawn-pane -k -t "$pane" -c "$path"
+    tmux set-option -p -t "$pane" @beehive_model "$model"
+    tmux select-pane -t "$pane" -T "🐝 Bee $bee_num"
+    sleep 1
+    tmux send-keys -t "$pane" "$pane_cmd" Enter
+
+    success "✓ Restarted $actor with model ${model:-(CLI default)}"
+}
+
+#######################################
 # Status display (beads-backed)
 #######################################
 do_status() {
@@ -1203,6 +1544,9 @@ Commands:
     beehive --status [path]     Show work items, agent states, and ready queue
     beehive --validate [path]   Validate beads health and sessions.jsonl
     beehive --stop [path]       Stop the persistent beads server
+    beehive --models [path]     Show per-agent models, available models, and usage
+    beehive --switch-model bee-N MODEL
+                                Restart one Bee with another model ('default' = CLI default)
 
 Options:
     --session NAME       Session name (default: folder name)
@@ -1220,7 +1564,7 @@ Options:
     --base-url URL       Anthropic API base URL (for API proxies)
     --api-key KEY        Anthropic API key
     --dry-run            Preview upgrade changes without modifying files
-    --json               Machine-readable JSON output for --status
+    --json               Machine-readable JSON output for --status and --models
     --yes                Skip confirmation
     --version            Show version
     --help               Show this help
@@ -1266,6 +1610,7 @@ main() {
     local CLI_AWS_PROFILE="" CLI_AWS_REGION=""
     local CLI_ANTHROPIC_BASE_URL="" CLI_ANTHROPIC_API_KEY=""
     local CLI_BEES="" CLI_QUEEN="" CLI_QUEEN_ONLY="" CLI_CLI="" CLI_CMD_OVERRIDE="" CLI_APPROVAL_MODE=""
+    local SWITCH_ACTOR="" SWITCH_MODEL=""
 
     while [[ $# -gt 0 ]]; do
         case "$1" in
@@ -1274,6 +1619,10 @@ main() {
             --status)       cmd="status"; shift ;;
             --validate)     cmd="validate"; shift ;;
             --stop)         cmd="stop"; shift ;;
+            --models)       cmd="models"; shift ;;
+            --switch-model)
+                [[ -z "${2:-}" || "${2:-}" == -* || -z "${3:-}" || "${3:-}" == -* ]] && die "--switch-model requires an agent (bee-N) and a model (or 'default')"
+                cmd="switch-model"; SWITCH_ACTOR="$2"; SWITCH_MODEL="$3"; shift 3 ;;
             --dry-run)      DRY_RUN=true; shift ;;
             --json)         JSON_OUTPUT=true; shift ;;
             --session)      [[ -z "${2:-}" || "${2:-}" == -* ]] && die "--session requires a value"; CLI_SESSION_NAME="$2"; shift 2 ;;
@@ -1311,6 +1660,8 @@ main() {
         status) do_status "$path" ;;
         validate) do_validate "$path" ;;
         stop) do_stop "$path" ;;
+        models) do_models "$path" "$CLI_SESSION_NAME" "$CLI_CLI" ;;
+        switch-model) do_switch_model "$path" "$CLI_SESSION_NAME" "$SWITCH_ACTOR" "$SWITCH_MODEL" ;;
         *)
             echo ""
             echo -e "${GREEN}Beehive${NC} v$VERSION"

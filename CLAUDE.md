@@ -15,6 +15,7 @@ beehive              # Main script (~1200 lines bash)
 ├── Upgrade          # do_upgrade(), _migrate_markdown_to_beads()
 ├── Status           # do_status() - wraps bd list/ready
 ├── Validate         # do_validate() - bd doctor + session metadata log check
+├── Models           # do_models(), do_switch_model() - model discovery, usage, Bee restart
 ├── Launch           # do_launch() - tmux session setup with BD_ACTOR per pane
 └── Main             # Argument parsing, dispatch
 
@@ -139,7 +140,10 @@ beehive --yes  # Should show "Bee model: test-bee" and "Queen model: test-queen"
 | `_migrate_markdown_to_beads()` | Parse old TRACKER.md directly into beads issues and archive legacy files |
 | `do_status()` | Display issues, agents, ready queue from bd list/ready; supports --json |
 | `do_validate()` | Run bd doctor + validate session metadata log |
-| `do_launch()` | Set up tmux session with N+1 panes, set BD_ACTOR per pane |
+| `do_launch()` | Set up tmux session with N+1 panes, set BD_ACTOR per pane, store hive metadata as tmux options |
+| `do_models()` | `--models`: per-pane models, available models (`list_available_models()`), usage (`usage_json()`) |
+| `do_switch_model()` | `--switch-model bee-N MODEL [--cli NAME]`: respawn one Bee pane with a new model/CLI |
+| `resolve_agent_cmd()` | Executable for one CLI family (`--cli-cmd` for default CLI, `CONF_CLI_CMD_<CLI>` otherwise) |
 
 ## Tmux Layout
 

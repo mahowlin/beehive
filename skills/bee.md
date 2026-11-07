@@ -23,6 +23,10 @@ If assigned work exists, start the current executable assignment. If no assignme
 
 If multiple assignments exist, continue already in-progress work unless Queen redirected you; skip blocked items unless prep-only work is explicitly allowed; otherwise ask Queen which item is current.
 
+## Model Restarts
+
+Queen may restart your pane with another model (`beehive --switch-model`). Your conversation context is lost; Beads is not. Before Queen switches you, save a checkpoint (`bedtime`). After a restart, resume from the latest checkpoint comment on your assigned bead.
+
 ## Coordination via Beads
 
 ```bash

@@ -2,6 +2,16 @@
 
 All notable changes to Beehive are documented here.
 
+## Unreleased
+
+### Added
+- `--cli copilot`, `--cli agy`, and `--cli vibe` launch hives with GitHub Copilot CLI, Google Antigravity CLI, and Mistral Vibe CLI.
+- `auto` approval mode uses edit-only profiles for the new CLIs (`--allow-tool write`, `--mode accept-edits`, `--agent accept-edits`); unrestricted modes stay disabled.
+- Per-agent CLIs: `--bee-cli`, `--queen-cli`, `CONF_CLI_BEE`, `CONF_CLI_BEE_N`, `CONF_CLI_QUEEN`, `CONF_MODEL_BEE_N`, and `CONF_CLI_CMD_<CLI>` let one hive mix CLIs and their subscriptions.
+- `beehive --models [--json]` shows each agent's CLI and model, and for every CLI in use or installed the discovered models (per CLI — for copilot via the Copilot models API, the same catalog as the interactive `/model` picker, plus recently used models — plus `CONF_MODELS_<CLI>`/`CONF_MODELS_CMD_<CLI>`) and usage (Claude Code project token totals, Codex rate limits, `CONF_USAGE_CMD_<CLI>`, `CONF_USAGE_CMD`).
+- `beehive --switch-model bee-N MODEL [--cli NAME]` restarts one Bee pane with another model and optionally another CLI; the Queen skill uses both commands to pick a model per assignment with user approval.
+- Model overrides are passed in the form each CLI expects (`--model` for Codex/Cursor/Copilot/Antigravity, `ANTHROPIC_MODEL` for Claude, `VIBE_ACTIVE_MODEL` for Vibe). Codex and Cursor previously only received `ANTHROPIC_MODEL`, which they ignore.
+
 ## v0.5.1 — 2026-03-24
 
 **Agent effectiveness improvements and workspace coordination polish.**

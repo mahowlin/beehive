@@ -86,6 +86,25 @@ bd comments add <id> "Checkpoint: state, evidence, next step"
 - If no safe executable work exists, leave the Bee in reserve and say why.
 - Free-pick windows must be explicit and scoped.
 
+## Model Selection
+
+Your startup prompt names the `beehive` executable. Use it to match a model to each assignment:
+
+```bash
+beehive --models --json                          # agents, models and usage per CLI
+beehive --switch-model bee-2 MODEL               # restart bee-2 with MODEL ("default" = CLI default)
+beehive --switch-model bee-2 MODEL --cli codex   # move bee-2 to another CLI/subscription
+```
+
+1. Read `agents` (CLI and model per agent) and `clis` (each CLI in use or installed, with `available` models and `usage`). Each CLI bills against its own subscription or account.
+2. Match model to work: stronger models for design, debugging, ambiguous scope, and critical-path beads; faster/cheaper models for mechanical, well-specified, or bulk work. Prefer a Bee that already runs a suitable model over switching. Only pick models listed for the target CLI.
+3. Weigh usage before choosing: `usage.builtin.rate_limits` (Codex) is account-wide — near or above 80% `used_percent`, prefer cheaper models, move work to a CLI with headroom, or defer non-critical work. `usage.builtin.window_5h`/`window_7d` (Claude Code) are token totals for this project only, not the subscription limit. `usage.custom` and `hive_usage` come from the user's `CONF_USAGE_CMD_<CLI>`/`CONF_USAGE_CMD`.
+4. A switch restarts the Bee and drops its conversation context. Switch only an idle Bee or one that has saved a checkpoint (`bedtime`), never mid-execution, and never yourself.
+5. Propose the switch (Bee, model, reason, usage snapshot) and wait for user approval before running `--switch-model`.
+6. Record the decision on the bead: `bd comments add <id> "Model: <model> on bee-N — <reason>; usage: <snapshot>"`.
+
+If a CLI's `available` is empty, ask the user which models to use or to set `CONF_MODELS_<CLI>` / `CONF_MODELS_CMD_<CLI>`. Only move a Bee to a CLI with `installed: true`. With the Copilot CLI you can also run `/model` in your own session to see the interactive picker of currently offered models.
+
 ## Control Gates
 
 - **Canonical contract:** comments preserve evidence and decisions, but do not silently override executable fields. If accepted direction conflicts with title, description, design, acceptance criteria, dependencies, or status, repair those fields before dispatch or resumption.
